@@ -1,0 +1,64 @@
+variant,quantity,a_ms,b_ms_per_signer,r2,formula_at_t_min,formula_at_t_max
+"ours","1. generating presigning message",28.0051,-0.0698,0.418071,27.866,27.517
+"ours","2. generating presigning proof",34.4895,-0.2008,0.637199,34.088,33.084
+"ours","3. verifying each peer's presigning proof",-34.9695,37.4836,0.998801,39.998,227.415
+"ours","4. NIM decoding with each peer",-30.6322,32.6864,0.998622,34.741,198.173
+"ours","5. finalizing online signing message",5.1548,0.2018,0.907377,5.558,6.568
+"ours","6. signature combination",6.6083,-0.0572,0.767112,6.494,6.208
+"ours","total (six stages)",8.6560,70.0440,0.998495,148.744,498.964
+"ours","phase: setup",0.0000,0.0000,1.000000,0.000,0.000
+"ours","phase: keygen",0.0000,0.0000,1.000000,0.000,0.000
+"ours","phase: round1: hashvrf",0.1800,-0.0005,0.049970,0.179,0.177
+"ours","phase: round1: W_i",1.0815,-0.0030,0.133932,1.075,1.060
+"ours","phase: round1: encode_B",26.7435,-0.0663,0.422154,26.611,26.280
+"ours","phase: round1: sigma prove",34.4895,-0.2008,0.637199,34.088,33.084
+"ours","phase: wire encode/decode",0.0000,0.0000,1.000000,0.000,0.000
+"ours","phase: round2: verify pi_j",-34.9695,37.4836,0.998801,39.998,227.415
+"ours","phase: round2: decode mu/nu",-30.6322,32.6864,0.998622,34.741,198.173
+"ours","phase: round2: W,(e,phi),U,tr",5.2227,0.1185,0.761869,5.460,6.052
+"ours","phase: round2: masks",-0.0683,0.0833,0.998381,0.098,0.515
+"ours","phase: round2: u_i,S_i",0.0004,-0.0000,0.005524,0.000,0.000
+"ours","phase: combine: aggregate",0.2813,0.0003,0.000783,0.282,0.283
+"ours","phase: combine: bbs verify",6.3270,-0.0575,0.779874,6.212,5.925
+"ours-sb","1. generating presigning message",12.9937,0.2184,0.615474,13.430,14.522
+"ours-sb","2. generating presigning proof",15.8347,0.2892,0.635365,16.413,17.859
+"ours-sb","3. verifying each peer's presigning proof",-24.9764,21.2033,0.996351,17.430,123.446
+"ours-sb","4. NIM decoding with each peer",-36.4555,30.5740,0.996146,24.692,177.562
+"ours-sb","5. finalizing online signing message",4.4508,0.2940,0.871543,5.039,6.509
+"ours-sb","6. signature combination",5.7953,0.0678,0.684362,5.931,6.270
+"ours-sb","total (six stages)",-22.3574,52.6466,0.995045,82.936,346.169
+"ours-sb","phase: setup",0.0000,0.0000,1.000000,0.000,0.000
+"ours-sb","phase: keygen",0.0000,0.0000,1.000000,0.000,0.000
+"ours-sb","phase: round1: hashvrf",0.1521,0.0034,0.604982,0.159,0.176
+"ours-sb","phase: round1: W_i",0.9712,0.0125,0.695155,0.996,1.059
+"ours-sb","phase: round1: encode_B",11.8704,0.2025,0.610326,12.275,13.288
+"ours-sb","phase: round1: sigma prove",15.8347,0.2892,0.635365,16.413,17.859
+"ours-sb","phase: wire encode/decode",0.0000,0.0000,1.000000,0.000,0.000
+"ours-sb","phase: round2: verify pi_j",-24.9764,21.2033,0.996351,17.430,123.446
+"ours-sb","phase: round2: decode mu/nu",-36.4555,30.5740,0.996146,24.692,177.562
+"ours-sb","phase: round2: W,(e,phi),U,tr",4.5458,0.2069,0.779337,4.960,5.994
+"ours-sb","phase: round2: masks",-0.0950,0.0870,0.998914,0.079,0.514
+"ours-sb","phase: round2: u_i,S_i",0.0000,0.0001,0.607678,0.000,0.000
+"ours-sb","phase: combine: aggregate",0.2541,0.0026,0.817041,0.259,0.273
+"ours-sb","phase: combine: bbs verify",5.5412,0.0652,0.678637,5.671,5.997
+"ours-sb-short","1. generating presigning message",5.7143,-0.0461,0.308418,5.622,5.391
+"ours-sb-short","2. generating presigning proof",9.6389,-0.1431,0.740591,9.353,8.637
+"ours-sb-short","3. verifying each peer's presigning proof",-10.6429,11.6463,0.997362,12.650,70.882
+"ours-sb-short","4. NIM decoding with each peer",-19.1995,20.6281,0.997505,22.057,125.197
+"ours-sb-short","5. finalizing online signing message",5.0354,0.2392,0.987490,5.514,6.709
+"ours-sb-short","6. signature combination",6.3664,0.0126,0.015894,6.392,6.454
+"ours-sb-short","total (six stages)",-3.0873,32.3370,0.996884,61.587,223.271
+"ours-sb-short","phase: setup",0.0000,0.0000,1.000000,0.000,0.000
+"ours-sb-short","phase: keygen",0.0000,0.0000,1.000000,0.000,0.000
+"ours-sb-short","phase: round1: hashvrf",0.1917,-0.0021,0.166971,0.188,0.177
+"ours-sb-short","phase: round1: W_i",1.0929,-0.0032,0.113727,1.087,1.071
+"ours-sb-short","phase: round1: encode_B",4.4296,-0.0409,0.339570,4.348,4.143
+"ours-sb-short","phase: round1: sigma prove",9.6389,-0.1431,0.740591,9.353,8.637
+"ours-sb-short","phase: wire encode/decode",0.0000,0.0000,1.000000,0.000,0.000
+"ours-sb-short","phase: round2: verify pi_j",-10.6429,11.6463,0.997362,12.650,70.882
+"ours-sb-short","phase: round2: decode mu/nu",-19.1995,20.6281,0.997505,22.057,125.197
+"ours-sb-short","phase: round2: W,(e,phi),U,tr",5.1070,0.1537,0.962959,5.414,6.183
+"ours-sb-short","phase: round2: masks",-0.0720,0.0854,0.998165,0.099,0.526
+"ours-sb-short","phase: round2: u_i,S_i",0.0004,0.0000,0.270315,0.000,0.000
+"ours-sb-short","phase: combine: aggregate",0.2942,-0.0021,0.118122,0.290,0.280
+"ours-sb-short","phase: combine: bbs verify",6.0722,0.0147,0.022497,6.102,6.175

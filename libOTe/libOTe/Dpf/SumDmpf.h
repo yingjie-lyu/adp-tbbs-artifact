@@ -1,0 +1,167 @@
+#pragma once
+
+#include "libOTe/config.h"
+#if defined(ENABLE_REGULAR_DPF)
+
+#include "cryptoTools/Common/Defines.h"
+#include "cryptoTools/Common/Timer.h"
+#include "RegularDpf.h"
+#include "libOTe/Tools/CoeffCtx.h"
+#include <limits>
+
+namespace osuCrypto
+{
+
+	template<typename T, typename CoeffCtx = DefaultCoeffCtx<T>>
+	struct SumDmpf : public TimerAdapter
+	{
+		SumDmpf() = default;
+		SumDmpf(const SumDmpf&) = delete;
+		SumDmpf& operator=(const SumDmpf&) = delete;
+
+		SumDmpf(SumDmpf&& src) noexcept
+		{
+			*this = std::move(src);
+		}
+
+		SumDmpf& operator=(SumDmpf&& src) noexcept
+		{
+			if (this != &src)
+			{
+				mTimer = src.mTimer;
+				mPartyIdx = src.mPartyIdx;
+				mNumPointsPerSet = src.mNumPointsPerSet;
+				mNumSets = src.mNumSets;
+				mDomain = src.mDomain;
+				mPrint = src.mPrint;
+				mDpf = std::move(src.mDpf);
+				mPoints = std::move(src.mPoints);
+				src.clear();
+				src.mTimer = nullptr;
+			}
+			return *this;
+		}
+
+		u64 mPartyIdx = 0;
+
+		// t
+		u64 mNumPointsPerSet = 0;
+
+		u64 mNumSets = 0;
+
+		// N
+		u64 mDomain = 0;
+
+		bool mPrint = false;
+
+		RegularDpf<T,CoeffCtx> mDpf;
+
+		std::vector<u64> mPoints;
+
+		void init(
+			u64 partyIdx,
+			u64 domain,
+			u64 pointsPerSet,
+			u64 numSets,
+			CoeffCtx ctx = {})
+		{
+			if (pointsPerSet && numSets > std::numeric_limits<u64>::max() / pointsPerSet)
+				throw RTE_LOC;
+			auto numPoints = pointsPerSet * numSets;
+			mDpf.init(partyIdx, domain, numPoints, ctx);
+			mPartyIdx = partyIdx;
+			mNumPointsPerSet = pointsPerSet;
+			mDomain = domain;
+			mNumSets = numSets;
+			mPoints.clear();
+		}
+
+		struct BaseCorCount
+		{
+			u64 mSendCount = 0;
+			u64 mRecvCount = 0;
+		};
+
+		BaseCorCount baseOtCount() const
+		{
+			auto c = mDpf.baseOtCount();
+			return { c, c };
+		}
+
+		bool hasBaseOts() const
+		{
+			return mDpf.hasBaseOts();
+		}
+
+		void setBaseOts(
+			span<const std::array<block, 2>>baseSend,
+			span<const block>  baseRecv,
+			const BitVector& recvChoice)
+		{
+			mDpf.setBaseOts(baseSend, baseRecv, recvChoice);
+		}
+
+
+
+		macoro::task<> setPoints(
+			MatrixView<const u64> points,
+			PRNG& prng,
+			coproto::Socket& sock)
+		{
+			if (points.size() != mNumSets * mNumPointsPerSet)
+				throw RTE_LOC;
+			if (points.stride() != mNumPointsPerSet)
+				throw RTE_LOC;
+
+			mPoints.assign(points.data(), points.data() + points.size());
+			co_return;
+		}
+
+		// Output callbacks follow the RegularDpf physical leaf order. pointIdx is
+		// always the logical domain index.
+		template<typename Output, typename = std::enable_if_t<
+			std::is_lvalue_reference<Output>::value || std::is_object<Output>::value>>
+		macoro::task<> expand(
+			span<T> values,
+			PRNG& prng,
+			coproto::Socket& sock,
+			Output output,
+			CoeffCtx ctx = {})
+		{
+			if (mPoints.size() != mNumSets * mNumPointsPerSet)
+				throw RTE_LOC;
+			if (values.size() != mNumSets * mNumPointsPerSet)
+				throw RTE_LOC;
+
+			auto sums = ctx.template makeVec<T>(mDomain);
+			ctx.zero(sums.begin(), sums.end());
+			co_await mDpf.expand(
+				mPoints, values, prng, sock, 
+				[&](u64 treeIdx, u64 pointIdx, auto value, block) {
+					ctx.plus(sums[pointIdx], sums[pointIdx], value);
+					if (treeIdx % mNumPointsPerSet + 1 == mNumPointsPerSet)
+					{
+						output(treeIdx / mNumPointsPerSet, pointIdx, sums[pointIdx]);
+						ctx.zero(sums[pointIdx]);
+					}
+				}, ctx);
+			co_return;
+		}
+
+		void clear()
+		{
+			mPoints.clear();
+			mDpf.clear();
+			mPartyIdx = 0;
+			mNumPointsPerSet = 0;
+			mNumSets = 0;
+			mDomain = 0;
+			mPrint = false;
+		}
+
+	};
+
+
+}
+
+#endif // ENABLE_REGULAR_DPF

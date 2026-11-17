@@ -1,0 +1,24 @@
+
+#pragma once
+#include "cryptoTools/Common/CLP.h"
+
+void RegularDpf_Multiply_Test(const oc::CLP& cmd);
+void RegularDpf_MultByte_Test(const oc::CLP& cmd);
+void RegularDpf_MultBit_Test(const oc::CLP& cmd);
+void RegularDpf_MultSession_Test(const oc::CLP& cmd);
+void RegularDpf_MultGeneric_Test(const oc::CLP& cmd);
+
+void RegularDpf_Proto_Test(const oc::CLP& cmd);
+void MsvcAesHashCoroutine_Regression_Test(const oc::CLP& cmd);
+void RegularDpf_Puncture_Test(const oc::CLP& cmd);
+void RegularDpf_keyGen_Test(const oc::CLP& cmd);
+void SumDmpf_Proto_Test(const oc::CLP& cmd);
+void SparseDpf_Mtx_Test(const oc::CLP& cmd);
+void SparseDpf_Vec_Test(const oc::CLP& cmd);
+void SparseDpf_Punct_Test(const oc::CLP& cmd);
+void SparseDpf_InactiveLevel_Test(const oc::CLP& cmd);
+void SparseDpf_CorrectionEncoding_Test(const oc::CLP& cmd);
+void CachedDpf_LeafRekey_Test(const oc::CLP& cmd);
+void DpfTreeHash_Rekey_Test(const oc::CLP& cmd);
+void TritDpf_Proto_Test(const oc::CLP& cmd);
+void Dpf_Audit_Test(const oc::CLP& cmd);

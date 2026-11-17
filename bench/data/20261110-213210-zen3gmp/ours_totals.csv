@@ -1,0 +1,145 @@
+variant,stage,t,mean_ms_per_signer,stddev_ms
+"ours","1. generating presigning message",2,25.8191
+"ours","2. generating presigning proof",2,31.1507
+"ours","3. verifying each peer's presigning proof",2,35.8310
+"ours","4. NIM decoding with each peer",2,31.3049
+"ours","5. finalizing online signing message",2,5.3074
+"ours","6. signature combination",2,6.0688
+"ours","total (six stages)",2,135.4818,1.4659
+"ours","wire encode/decode (separate run)",2,0.6932,0.0050
+"ours","1. generating presigning message",3,26.1079
+"ours","2. generating presigning proof",3,31.3814
+"ours","3. verifying each peer's presigning proof",3,71.4226
+"ours","4. NIM decoding with each peer",3,62.2703
+"ours","5. finalizing online signing message",3,5.3650
+"ours","6. signature combination",3,6.2451
+"ours","total (six stages)",3,202.7923,1.8032
+"ours","wire encode/decode (separate run)",3,0.9283,0.0161
+"ours","1. generating presigning message",4,25.6003
+"ours","2. generating presigning proof",4,31.0806
+"ours","3. verifying each peer's presigning proof",4,107.4534
+"ours","4. NIM decoding with each peer",4,93.6555
+"ours","5. finalizing online signing message",4,5.4594
+"ours","6. signature combination",4,6.0281
+"ours","total (six stages)",4,269.2771,5.1174
+"ours","wire encode/decode (separate run)",4,1.1646,0.0131
+"ours","1. generating presigning message",5,26.8415
+"ours","2. generating presigning proof",5,32.5338
+"ours","3. verifying each peer's presigning proof",5,148.9230
+"ours","4. NIM decoding with each peer",5,131.1898
+"ours","5. finalizing online signing message",5,6.0567
+"ours","6. signature combination",5,6.2425
+"ours","total (six stages)",5,351.7873,16.9974
+"ours","wire encode/decode (separate run)",5,1.5244,0.0844
+"ours","1. generating presigning message",6,27.4159
+"ours","2. generating presigning proof",6,33.4053
+"ours","3. verifying each peer's presigning proof",6,191.8548
+"ours","4. NIM decoding with each peer",6,167.0182
+"ours","5. finalizing online signing message",6,6.4975
+"ours","6. signature combination",6,6.3550
+"ours","total (six stages)",6,432.5468,0.7023
+"ours","wire encode/decode (separate run)",6,1.8717,0.0291
+"ours","1. generating presigning message",7,27.7810
+"ours","2. generating presigning proof",7,33.4772
+"ours","3. verifying each peer's presigning proof",7,231.1063
+"ours","4. NIM decoding with each peer",7,201.4836
+"ours","5. finalizing online signing message",7,6.8647
+"ours","6. signature combination",7,6.3041
+"ours","total (six stages)",7,507.0168,2.6358
+"ours","wire encode/decode (separate run)",7,2.1455,0.0203
+"ours-sb","1. generating presigning message",2,15.3756
+"ours-sb","2. generating presigning proof",2,18.5370
+"ours-sb","3. verifying each peer's presigning proof",2,21.3010
+"ours-sb","4. NIM decoding with each peer",2,29.9571
+"ours-sb","5. finalizing online signing message",2,5.5983
+"ours-sb","6. signature combination",2,6.3253
+"ours-sb","total (six stages)",2,97.0942,2.5510
+"ours-sb","wire encode/decode (separate run)",2,0.7142,0.0230
+"ours-sb","1. generating presigning message",3,14.9062
+"ours-sb","2. generating presigning proof",3,17.8599
+"ours-sb","3. verifying each peer's presigning proof",3,41.8829
+"ours-sb","4. NIM decoding with each peer",3,59.9131
+"ours-sb","5. finalizing online signing message",3,5.6059
+"ours-sb","6. signature combination",3,6.3177
+"ours-sb","total (six stages)",3,146.4858,0.5638
+"ours-sb","wire encode/decode (separate run)",3,0.9306,0.0351
+"ours-sb","1. generating presigning message",4,14.7877
+"ours-sb","2. generating presigning proof",4,18.0051
+"ours-sb","3. verifying each peer's presigning proof",4,63.6114
+"ours-sb","4. NIM decoding with each peer",4,90.4789
+"ours-sb","5. finalizing online signing message",4,5.8433
+"ours-sb","6. signature combination",4,6.3626
+"ours-sb","total (six stages)",4,199.0890,1.5826
+"ours-sb","wire encode/decode (separate run)",4,1.2337,0.0635
+"ours-sb","1. generating presigning message",5,15.0746
+"ours-sb","2. generating presigning proof",5,18.6868
+"ours-sb","3. verifying each peer's presigning proof",5,86.0555
+"ours-sb","4. NIM decoding with each peer",5,121.0480
+"ours-sb","5. finalizing online signing message",5,6.1919
+"ours-sb","6. signature combination",5,6.2676
+"ours-sb","total (six stages)",5,253.3244,6.6031
+"ours-sb","wire encode/decode (separate run)",5,1.3686,0.0373
+"ours-sb","1. generating presigning message",6,14.5020
+"ours-sb","2. generating presigning proof",6,17.8179
+"ours-sb","3. verifying each peer's presigning proof",6,105.2579
+"ours-sb","4. NIM decoding with each peer",6,151.8105
+"ours-sb","5. finalizing online signing message",6,6.3783
+"ours-sb","6. signature combination",6,6.6590
+"ours-sb","total (six stages)",6,302.4257,14.4209
+"ours-sb","wire encode/decode (separate run)",6,1.6100,0.0783
+"ours-sb","1. generating presigning message",7,15.0163
+"ours-sb","2. generating presigning proof",7,18.3427
+"ours-sb","3. verifying each peer's presigning proof",7,128.2280
+"ours-sb","4. NIM decoding with each peer",7,183.6406
+"ours-sb","5. finalizing online signing message",7,6.9290
+"ours-sb","6. signature combination",7,6.3192
+"ours-sb","total (six stages)",7,358.4758,2.9850
+"ours-sb","wire encode/decode (separate run)",7,1.8689,0.0359
+"ours-sb-short","1. generating presigning message",2,5.5418
+"ours-sb-short","2. generating presigning proof",2,8.6558
+"ours-sb-short","3. verifying each peer's presigning proof",2,12.0485
+"ours-sb-short","4. NIM decoding with each peer",2,21.3848
+"ours-sb-short","5. finalizing online signing message",2,5.7092
+"ours-sb-short","6. signature combination",2,6.5634
+"ours-sb-short","total (six stages)",2,59.9034,0.7720
+"ours-sb-short","wire encode/decode (separate run)",2,0.7075,0.0385
+"ours-sb-short","1. generating presigning message",3,5.4231
+"ours-sb-short","2. generating presigning proof",3,8.8542
+"ours-sb-short","3. verifying each peer's presigning proof",3,24.0647
+"ours-sb-short","4. NIM decoding with each peer",3,42.1537
+"ours-sb-short","5. finalizing online signing message",3,5.6212
+"ours-sb-short","6. signature combination",3,6.4026
+"ours-sb-short","total (six stages)",3,92.5194,1.5923
+"ours-sb-short","wire encode/decode (separate run)",3,0.9218,0.0438
+"ours-sb-short","1. generating presigning message",4,5.4562
+"ours-sb-short","2. generating presigning proof",4,8.8562
+"ours-sb-short","3. verifying each peer's presigning proof",4,35.7468
+"ours-sb-short","4. NIM decoding with each peer",4,63.2923
+"ours-sb-short","5. finalizing online signing message",4,5.9371
+"ours-sb-short","6. signature combination",4,6.3762
+"ours-sb-short","total (six stages)",4,125.6648,0.6031
+"ours-sb-short","wire encode/decode (separate run)",4,1.1504,0.0424
+"ours-sb-short","1. generating presigning message",5,5.5424
+"ours-sb-short","2. generating presigning proof",5,8.9742
+"ours-sb-short","3. verifying each peer's presigning proof",5,47.5693
+"ours-sb-short","4. NIM decoding with each peer",5,83.5086
+"ours-sb-short","5. finalizing online signing message",5,6.0773
+"ours-sb-short","6. signature combination",5,6.4845
+"ours-sb-short","total (six stages)",5,158.1562,0.9373
+"ours-sb-short","wire encode/decode (separate run)",5,1.3780,0.0577
+"ours-sb-short","1. generating presigning message",6,5.5611
+"ours-sb-short","2. generating presigning proof",6,8.8267
+"ours-sb-short","3. verifying each peer's presigning proof",6,60.2371
+"ours-sb-short","4. NIM decoding with each peer",6,105.6455
+"ours-sb-short","5. finalizing online signing message",6,6.4653
+"ours-sb-short","6. signature combination",6,6.3905
+"ours-sb-short","total (six stages)",6,193.1262,3.3256
+"ours-sb-short","wire encode/decode (separate run)",6,1.6359,0.0209
+"ours-sb-short","1. generating presigning message",7,5.5773
+"ours-sb-short","2. generating presigning proof",7,8.9007
+"ours-sb-short","3. verifying each peer's presigning proof",7,72.5245
+"ours-sb-short","4. NIM decoding with each peer",7,128.3625
+"ours-sb-short","5. finalizing online signing message",7,6.9413
+"ours-sb-short","6. signature combination",7,6.4294
+"ours-sb-short","total (six stages)",7,228.7355,5.6776
+"ours-sb-short","wire encode/decode (separate run)",7,1.8618,0.0573

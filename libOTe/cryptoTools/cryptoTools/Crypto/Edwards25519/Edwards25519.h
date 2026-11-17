@@ -1,0 +1,172 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <type_traits>
+
+#include <cryptoTools/Crypto/Hashable.h>
+
+extern "C" {
+#include <cryptoTools/Crypto/Edwards25519/portable/ge25519.h>
+#ifndef CRYPTOTOOLS_EDWARDS25519_IFMA
+#include <cryptoTools/Crypto/Edwards25519/batch/ge4x.h>
+#endif
+}
+
+#ifdef CRYPTOTOOLS_EDWARDS25519_IFMA
+#include <cryptoTools/Crypto/Edwards25519/ifma/ge8x_ifma.h>
+#endif
+
+namespace osuCrypto
+{
+namespace Edwards25519
+{
+    constexpr std::size_t encodedSize = 32;
+    constexpr std::size_t lanes = 8;
+
+    class FixedPointTable;
+
+#if defined(CRYPTOTOOLS_EDWARDS25519_IFMA) || defined(CRYPTOTOOLS_EDWARDS25519_ASM)
+    constexpr bool hasOptimizedBackend = true;
+#else
+    constexpr bool hasOptimizedBackend = false;
+#endif
+
+#ifdef CRYPTOTOOLS_EDWARDS25519_IFMA
+    constexpr bool hasIfmaBackend = true;
+#else
+    constexpr bool hasIfmaBackend = false;
+#endif
+
+    // A clamped scalar reduced modulo the order, matching Simplest OT's
+    // historical scalar semantics.
+    class Scalar
+    {
+    public:
+        Scalar() noexcept = default;
+        explicit Scalar(const std::uint8_t bytes[encodedSize]) noexcept { fromBytes(bytes); }
+
+        void fromBytes(const std::uint8_t bytes[encodedSize]) noexcept;
+        void toBytes(std::uint8_t bytes[encodedSize]) const noexcept;
+
+    private:
+        sc25519 mValue{};
+        friend class Point;
+        friend class Point8;
+        friend class FixedPointTable;
+    };
+
+    class Point
+    {
+    public:
+        Point() noexcept;
+
+        static Point mulGenerator(const Scalar& scalar) noexcept;
+        // A random-oracle hash to the prime-order Edwards25519 subgroup.
+        // This is a custom XMD:BLAKE2B_ELL2_RO_ suite using the RFC 9380
+        // Elligator2 map and cofactor clearing. The mandatory application
+        // domain is wrapped in a versioned cryptoTools suite identifier.
+        static Point hashToCurveElligator2(
+            const std::uint8_t* message, std::size_t messageSize,
+            const std::uint8_t* domain, std::size_t domainSize);
+        Point mul(const Scalar& scalar) const noexcept;
+        Point operator+(const Point& rhs) const noexcept;
+        Point operator-(const Point& rhs) const noexcept;
+        Point doubled() const noexcept;
+        // Map a raw Edwards point into the prime-order subgroup.
+        Point clearCofactor() const noexcept;
+
+        bool fromBytes(const std::uint8_t bytes[encodedSize]) noexcept;
+        void toBytes(std::uint8_t bytes[encodedSize]) const noexcept;
+        bool isNeutral() const noexcept;
+
+    private:
+        ge25519 mValue;
+        friend class Point8;
+        friend class FixedPointTable;
+    };
+
+    // A fixed eight-point batch. AVX-512 IFMA operates on all eight lanes;
+    // other backends use two independent four-lane blocks.
+    class Point8
+    {
+    public:
+        Point8() noexcept;
+
+        static Point8 broadcast(const Point& point) noexcept;
+        // Hash eight equal-length, lane-major messages.
+        static Point8 hashToCurveElligator2(
+            const std::uint8_t* messages, std::size_t messageSize,
+            const std::uint8_t* domain, std::size_t domainSize);
+        static Point8 mulGenerator(const std::array<Scalar, lanes>& scalars) noexcept;
+        Point8 mul(const Scalar& scalar) const noexcept;
+        Point8 mul(const std::array<Scalar, lanes>& scalars) const noexcept;
+        Point8 operator+(const Point8& rhs) const noexcept;
+        Point8 operator-(const Point8& rhs) const noexcept;
+        Point8 doubled() const noexcept;
+        // Map every lane into the prime-order subgroup.
+        Point8 clearCofactor() const noexcept;
+        void conditionalMove(const Point8& source,
+                             const std::array<std::uint8_t, lanes>& select) noexcept;
+
+        bool fromBytes(const std::uint8_t bytes[lanes * encodedSize]) noexcept;
+        void toBytes(std::uint8_t bytes[lanes * encodedSize]) const noexcept;
+
+    private:
+        struct Uninitialized {};
+        explicit Point8(Uninitialized) noexcept {}
+#ifdef CRYPTOTOOLS_EDWARDS25519_IFMA
+        ge8x mValue;
+#else
+        ge4x mValue[2];
+#endif
+        friend class FixedPointTable;
+    };
+
+    // Precompute one point for repeated eight-lane scalar multiplication.
+    // The assembly backend uses an interleaved window table; other backends
+    // retain the point and preserve the same API.
+    class FixedPointTable
+    {
+    public:
+        explicit FixedPointTable(const Point& point);
+        ~FixedPointTable();
+        FixedPointTable(FixedPointTable&&) noexcept;
+        FixedPointTable& operator=(FixedPointTable&&) noexcept;
+        FixedPointTable(const FixedPointTable&) = delete;
+        FixedPointTable& operator=(const FixedPointTable&) = delete;
+
+        Point8 mul(const std::array<Scalar, lanes>& scalars) const noexcept;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> mImpl;
+    };
+}
+
+template<>
+struct Hashable<Edwards25519::Point, void> : std::true_type
+{
+    template<typename Hasher>
+    static void hash(const Edwards25519::Point& point, Hasher& hasher)
+    {
+        std::uint8_t encoded[Edwards25519::encodedSize];
+        point.toBytes(encoded);
+        hasher.Update(encoded, Edwards25519::encodedSize);
+    }
+};
+
+template<>
+struct Hashable<Edwards25519::Point8, void> : std::true_type
+{
+    template<typename Hasher>
+    static void hash(const Edwards25519::Point8& points, Hasher& hasher)
+    {
+        std::uint8_t encoded[Edwards25519::lanes * Edwards25519::encodedSize];
+        points.toBytes(encoded);
+        hasher.Update(encoded, Edwards25519::lanes * Edwards25519::encodedSize);
+    }
+};
+}

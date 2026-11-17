@@ -1,0 +1,1123 @@
+#include "OT_Tests.h"
+
+#include "libOTe/TwoChooseOne/OTExtInterface.h"
+
+#include "libOTe/Tools/Tools.h"
+#include "libOTe/Tools/LinearCode.h"
+#include "libOTe/Tools/RepetitionCode.h"
+#include <cryptoTools/Network/Channel.h>
+#include <cryptoTools/Network/Session.h>
+#include <cryptoTools/Network/IOService.h>
+#include <cryptoTools/Common/Log.h>
+
+#include "libOTe/NChooseOne/Kkrt/KkrtNcoOtReceiver.h"
+#include "libOTe/NChooseOne/Kkrt/KkrtNcoOtSender.h"
+
+#include "libOTe/NChooseOne/Oos/OosNcoOtReceiver.h"
+#include "libOTe/NChooseOne/Oos/OosNcoOtSender.h"
+
+#include "Common.h"
+#include <thread>
+#include <vector>
+#include "NcoOT_Tests.h"
+#include "libOTe/Tools/bch511.h"
+
+#include "libOTe_Tests/testData/code128_BCH511.h"
+#include "libOTe_Tests/testData/code256_BCH511.h"
+#include "libOTe_Tests/testData/code384_BCH511.h"
+#include "libOTe_Tests/testData/code640_BCH511.h"
+#include "libOTe_Tests/testData/code1280_BCH511.h"
+#include <cryptoTools/Common/TestCollection.h>
+#include "libOTe/NChooseOne/NcoOtExt.h"
+#include "cryptoTools/Common/BitVector.h"
+#include "cryptoTools/Crypto/PRNG.h"
+#include <cstring>
+#include <sstream>
+
+using namespace osuCrypto;
+
+
+
+
+namespace tests_libOTe
+{
+#ifdef LIBOTE_HAS_NCO
+    void setBaseOts(NcoOtExtSender& sender,
+        NcoOtExtReceiver& recv)
+    {
+        u64 baseCount = sender.getBaseOTCount();
+
+        std::vector<block> baseRecv(baseCount);
+        std::vector<std::array<block, 2>> baseSend(baseCount);
+        BitVector baseChoice(baseCount);
+        PRNG prng0(ZeroBlock);
+        PRNG prng1(OneBlock);
+        baseChoice.randomize(prng0);
+
+        prng0.get((u8*)baseSend.data()->data(), sizeof(block) * 2 * baseSend.size());
+        for (u64 i = 0; i < baseCount; ++i)
+        {
+            baseRecv[i] = baseSend[i][baseChoice[i]];
+        }
+
+        auto sock = cp::LocalAsyncSocket::makePair();
+
+        auto p0 = sender.setBaseOts(baseRecv, baseChoice, sock[0]);
+        auto p1 = recv.setBaseOts(baseSend, prng0, sock[1]);
+        
+        eval(p0, p1);
+    }
+
+
+    void testNco(
+        NcoOtExtSender &sender,
+        const u64 &numOTs,
+        PRNG &prng0,
+        NcoOtExtReceiver &recv,
+        PRNG &prng1)
+    {
+        auto sock = cp::LocalAsyncSocket::makePair();
+
+        u64 stepSize = 33;
+        std::vector<block> inputs(stepSize);
+        setThreadName("Receiver");
+
+        for (size_t j = 0; j < 3; j++)
+        {
+            // perform the init on each of the classes. should be performed concurrently
+
+            auto p0 = sender.init(numOTs, prng0, sock[0]);
+            auto p1 = recv.init(numOTs, prng1, sock[1]);
+            eval(p0, p1);
+
+
+            std::vector<block> encoding1(stepSize), encoding2(stepSize);
+
+            // Get the random OT mMessages
+            for (u64 i = 0; i < numOTs; i += stepSize)
+            {
+                auto curStepSize = std::min<u64>(stepSize, numOTs - i);
+                std::vector<u8> skips(curStepSize);
+
+                prng0.get(inputs.data(), inputs.size());
+                prng0.get((bool*)skips.data(), skips.size());
+
+                for (u64 k = 0; k < curStepSize; ++k)
+                {
+
+                    // The receiver MUST encode before the sender. Here we are only calling encode(...)
+                    // for a single i. But the receiver can also encode many i, but should only make one
+                    // call to encode for any given value of i.
+                    if (skips[k])
+                    {
+                        recv.zeroEncode(i + k);
+                    }
+                    else {
+                        recv.encode(i + k, &inputs[k], (u8*)&encoding1[k], sizeof(block));
+                    }
+                }
+
+                // This call will send to the other party the next "curStepSize " corrections to the sender.
+                // If we had made more or less calls to encode above (for contigious i), then we should replace
+                // curStepSize  with however many calls we made. In an extreme case, the reciever can perform
+                // encode for i \in {0, ..., numOTs - 1}  and then call sendCorrection(recvChl, numOTs).
+                auto p1 = recv.sendCorrection(sock[1], curStepSize);
+
+                // receive the next curStepSize  correction values. This allows the sender to now call encode
+                // on the next curStepSize  OTs.
+                auto p0 = sender.recvCorrection(sock[0], curStepSize);
+
+                eval(p0, p1);
+
+
+                for (u64 k = 0; k < curStepSize; ++k)
+                {
+                    // the sender can now call encode(i, ...) for k \in {0, ..., i}.
+                    // Lets encode the same input and then we should expect to
+                    // get the same encoding.
+                    sender.encode(i + k, &inputs[k], (u8*)&encoding2[k], sizeof(block));
+
+                    // check that we do in fact get the same value
+                    if (! skips[k] && neq(encoding1[k], encoding2[k]))
+                        throw UnitTestFail("ot[" + std::to_string(i+k) + "] not equal " LOCATION);
+
+                    // In addition to the sender being able to obtain the same value as the receiver,
+                    // the sender can encode and other codeword. This should result in a different
+                    // encoding.
+                    inputs[k] = prng0.get<block>();
+
+                    sender.encode(i + k, &inputs[k], (u8*)&encoding2[k], sizeof(block));
+
+                    if (eq(encoding1[k], encoding2[k]))
+                        throw UnitTestFail(LOCATION);
+                }
+            }
+
+            p0 = sender.check(sock[0], prng0.get());
+            p1 = recv.check(sock[1], prng1.get());
+
+            eval(p0, p1);
+
+        }
+
+    }
+#endif
+
+    void NcoOt_Kkrt_Test()
+    {
+#ifdef ENABLE_KKRT
+        setThreadName("Sender");
+
+        PRNG prng0(block(4253465, 3434565));
+        PRNG prng1(block(42532335, 334565));
+
+        // The total number that we wish to do
+        u64 numOTs = 128;
+
+        KkrtNcoOtSender sender;
+        KkrtNcoOtReceiver recv;
+
+        // get up the parameters and get some information back.
+        //  1) false = semi-honest
+        //  2) 40  =  statistical security param.
+        //  3) numOTs = number of OTs that we will perform
+        sender.configure(false, 40, 128);
+        recv.configure(false, 40, 128);
+
+        setBaseOts(sender, recv);
+        testNco(sender, numOTs, prng0, recv, prng1);
+
+        auto sender2 = sender.split();
+        auto recv2 = recv.split();
+
+        testNco(*sender2, numOTs, prng0, *recv2, prng1);
+
+        //// the number of base OT that need to be done
+        //u64 baseCount = sender.getBaseOTCount();
+
+        //// Fake some base OTs
+        //std::vector<block> baseRecv(baseCount);
+        //std::vector<std::array<block, 2>> baseSend(baseCount);
+        //BitVector baseChoice(baseCount);
+        //baseChoice.randomize(prng0);
+        //prng0.get((u8*)baseSend.data()->data(), sizeof(block) * 2 * baseSend.size());
+        //for (u64 i = 0; i < baseCount; ++i)
+        //{
+        //    baseRecv[i] = baseSend[i][baseChoice[i]];
+        //}
+
+        //// set up networking
+        //cp::LocalEvaluator ev;
+        //auto sock = ev.getSocketPair();
+        //
+
+
+        //// set the base OTs
+        //sender.setBaseOts(baseRecv, baseChoice);
+        //recv.setBaseOts(baseSend);
+
+        //u64 stepSize = 10;
+        //std::vector<block> inputs(stepSize);
+
+        //for (size_t j = 0; j < 2; j++)
+        //{
+        //    // perform the init on each of the classes. should be performed concurrently
+        //    auto p0 = sender.init(numOTs, prng0, sock[0]);
+        //    auto p1 = recv.init(numOTs, prng1, sock[1]);
+        //    auto r = ev.eval(p0, p1);
+        //    if (r)
+        //        throw RTE_LOC;
+
+
+        //    std::vector<block> encoding1(stepSize), encoding2(stepSize);
+
+        //    // Get the random OT messages
+        //    for (u64 i = 0; i < numOTs; i += stepSize)
+        //    {
+
+        //        prng0.get(inputs.data(), inputs.size());
+
+        //        auto ss = std::min<u64>(stepSize, numOTs - i);
+        //        for (u64 k = 0; k < ss; ++k)
+        //        {
+        //            // The receiver MUST encode before the sender. Here we are only calling encode(...) 
+        //            // for a single i. But the receiver can also encode many i, but should only make one 
+        //            // call to encode for any given value of i.
+        //            recv.encode(i + k, &inputs[k], (u8*)&encoding1[k], sizeof(block));
+        //        }
+
+        //        // This call will send to the other party the next "stepSize" corrections to the sender.
+        //        // If we had made more or less calls to encode above (for contigious i), then we should replace
+        //        // stepSize with however many calls we made. In an extreme case, the reciever can perform
+        //        // encode for i \in {0, ..., numOTs - 1}  and then call sendCorrection(recvChl, numOTs).
+        //        p1 = recv.sendCorrection(sock[1], ss);
+
+        //        // receive the next stepSize correction values. This allows the sender to now call encode
+        //        // on the next stepSize OTs.
+        //        p0 = sender.recvCorrection(sock[0], ss);
+
+        //        r = ev.eval(p0, p1);
+        //        if (r)
+        //            throw RTE_LOC;
+
+        //        for (u64 k = 0; k < ss; ++k)
+        //        {
+   
+        //            // the sender can now call encode(i, ...) for k \in {0, ..., i}. 
+        //            // Lets encode the same input and then we should expect to
+        //            // get the same encoding.
+        //            sender.encode(i + k, &inputs[k], (u8*)&encoding2[k], sizeof(block));
+
+        //            // check that we do in fact get the same value
+        //            if (neq(encoding1[k], encoding2[k]))
+        //                throw UnitTestFail(LOCATION);
+
+        //            // In addition to the sender being able to obtain the same value as the receiver,
+        //            // the sender can encode and other codeword. This should result in a different 
+        //            // encoding.
+        //            inputs[k] = prng0.get<block>();
+
+        //            sender.encode(i + k, &inputs[k], (u8*)&encoding2[k], sizeof(block));
+
+        //            if (eq(encoding1[k], encoding2[k]))
+        //                throw UnitTestFail(LOCATION);
+        //        }
+        //    }
+        //}
+
+        //// Double check that we can call split and perform the same tests.
+        //auto recv2Ptr = recv.split();
+        //auto send2Ptr = sender.split();
+
+        //auto& recv2 = *recv2Ptr;
+        //auto& send2 = *send2Ptr;
+
+        //for (size_t j = 0; j < 2; j++)
+        //{
+        //    auto p0 = send2.init(numOTs, prng0, sock[0]);
+        //    auto p1 = recv2.init(numOTs, prng1, sock[1]);
+        //    auto r = ev.eval(p0, p1);
+        //    if (r)
+        //        throw RTE_LOC;
+
+
+
+        //    for (u64 i = 0; i < numOTs; ++i)
+        //    {
+        //        block input = prng0.get<block>();
+
+        //        block encoding1, encoding2;
+        //        recv2.encode(i, &input, &encoding1);
+
+        //        p1 = recv2.sendCorrection(sock[1], 1);
+        //        p0 = send2.recvCorrection(sock[0], 1);
+        //        r = ev.eval(p0, p1);
+        //        if (r)
+        //            throw RTE_LOC;
+
+        //        send2.encode(i, &input, &encoding2);
+
+        //        if (neq(encoding1, encoding2))
+        //            throw UnitTestFail(LOCATION);
+
+        //        input = prng0.get<block>();
+
+        //        send2.encode(i, &input, &encoding2);
+
+        //        if (eq(encoding1, encoding2))
+        //            throw UnitTestFail(LOCATION);
+        //    }
+
+        //}
+#else
+throw UnitTestSkipped("ENALBE_KKRT is not defined.");
+#endif
+    }
+
+    void NcoOt_Oos_Test()
+    {
+#ifdef ENABLE_OOS
+        setThreadName("Sender");
+
+        PRNG prng0(block(4253465, 3434565));
+        PRNG prng1(block(42532335, 334565));
+
+        u64 numOTs = 128 ;
+
+        OosNcoOtSender sender;
+        OosNcoOtReceiver recv;
+
+        sender.configure(true, 40, 50);
+        recv.configure(true, 40, 50);
+
+        setBaseOts(sender, recv);
+
+        for (u64 i = 0; i < sender.mBaseChoiceBits.size(); ++i)
+        {
+            if (sender.mGens[i].getSeed() != recv.mGens[i][sender.mBaseChoiceBits[i]].getSeed())
+                throw RTE_LOC;
+        }
+
+        testNco(sender, numOTs, prng0, recv, prng1);
+
+        auto sender2 = sender.split();
+        auto recv2 = recv.split();
+
+        testNco(*sender2, numOTs, prng0, *recv2, prng1);
+
+#else
+        throw UnitTestSkipped("ENALBE_OOS is not defined.");
+#endif
+    }
+
+    void NcoOt_chosen()
+    {
+#ifdef ENABLE_OOS
+        setThreadName("Sender");
+
+        PRNG prng0(block(4253465, 3434565));
+        PRNG prng1(block(42532335, 334565));
+
+        u64 numOTs = 80;
+        u64 inputSize = 8;
+
+        OosNcoOtSender sender;
+        OosNcoOtReceiver recv;
+        //u64  baseCount;
+        sender.configure(true, 40, inputSize);
+        recv.configure(true, 40, inputSize);
+
+        setBaseOts(sender, recv);
+
+        auto messageCount = 1ull << inputSize;
+        Matrix<block> sendMessage(numOTs, messageCount);
+        std::vector<block> recvMessage(numOTs);
+
+        prng0.get(sendMessage.data(), sendMessage.size());
+
+
+        std::vector<u64> choices(numOTs);
+        for (u64 i = 0; i < choices.size(); ++i)
+        {
+            choices[i] = prng0.get<u8>();
+        }
+
+
+        auto sock = cp::LocalAsyncSocket::makePair();
+
+        auto p0 = recv.receiveChosen(messageCount, recvMessage, choices, prng1, sock[0]);
+        auto p1 = sender.sendChosen(sendMessage, prng0, sock[1]);
+
+        eval(p0, p1);
+
+        for (u64 i = 0; i < choices.size(); ++i)
+        {
+            if (neq(recvMessage[i], sendMessage(i, choices[i])))
+                throw UnitTestFail("bad message " LOCATION);
+        }
+
+#else
+        throw UnitTestSkipped("ENALBE_OOS is not defined.");
+#endif
+    }
+
+
+    void NcoOt_ChosenValidation_Test()
+    {
+#ifdef ENABLE_OOS
+        auto expectThrow = [](auto&& taskFactory) {
+            bool threw = false;
+            try
+            {
+                macoro::sync_wait(taskFactory());
+            }
+            catch (const std::exception&)
+            {
+                threw = true;
+            }
+            if (!threw)
+                throw UnitTestFail(LOCATION);
+        };
+
+        PRNG prng(ZeroBlock);
+        OosNcoOtSender sender;
+        OosNcoOtReceiver receiver;
+        sender.configure(true, 40, 2);
+        receiver.configure(true, 40, 2);
+
+        {
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            Matrix<block> messages(1, 5);
+            expectThrow([&] { return sender.sendChosen(messages, prng, sockets[0]); });
+        }
+        {
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            std::vector<block> messages(2);
+            std::vector<u64> choices(1);
+            expectThrow([&] {
+                return receiver.receiveChosen(4, messages, choices, prng, sockets[0]);
+            });
+        }
+        {
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            std::vector<block> messages(1);
+            std::vector<u64> choices{ 4 };
+            expectThrow([&] {
+                return receiver.receiveChosen(4, messages, choices, prng, sockets[0]);
+            });
+        }
+        {
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            std::vector<block> messages(1);
+            std::vector<u64> choices{ 0 };
+            expectThrow([&] {
+                return receiver.receiveChosen(5, messages, choices, prng, sockets[0]);
+            });
+        }
+		{
+			OosNcoOtReceiver wideReceiver;
+			wideReceiver.configure(false, 40, 64);
+			auto sockets = cp::LocalAsyncSocket::makePair();
+			std::vector<block> messages(2);
+			std::vector<u64> choices(2);
+			expectThrow([&] {
+				return wideReceiver.receiveChosen(
+					u64{ 1 } << 63, messages, choices, prng, sockets[0]);
+			});
+			if (wideReceiver.hasBaseOts())
+				throw UnitTestFail("overflowing chosen dimensions consumed NCO state" LOCATION);
+		}
+#else
+        throw UnitTestSkipped("ENABLE_OOS is not defined.");
+#endif
+    }
+
+
+    void NcoOt_StateValidation_Test()
+    {
+#if defined(ENABLE_KKRT) && defined(ENABLE_OOS)
+        auto expectThrow = [](auto&& fn) {
+            bool threw = false;
+            try
+            {
+                fn();
+            }
+            catch (const std::exception&)
+            {
+                threw = true;
+            }
+            if (!threw)
+                throw UnitTestFail(LOCATION);
+        };
+
+        block input = ZeroBlock;
+        block output = ZeroBlock;
+
+        expectThrow([&] {
+            OosNcoOtSender sender;
+            sender.configure(true, 0, 8);
+        });
+        expectThrow([&] {
+            OosNcoOtReceiver receiver;
+            receiver.configure(true, 7, 8);
+        });
+        expectThrow([&] {
+            OosNcoOtSender sender;
+            sender.configure(false, maxNcoStatSecParam + 1, 8);
+        });
+        expectThrow([&] {
+            OosNcoOtSender sender;
+            sender.configure(false, 40, 0);
+        });
+        expectThrow([&] {
+            OosNcoOtReceiver receiver;
+            receiver.configure(false, 40, 0);
+        });
+
+        PRNG prng(ZeroBlock);
+        {
+            KkrtNcoOtSender sender;
+            sender.configure(false, 40, 128);
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(sender.init(maxNcoOtCount + 1, prng, sockets[0]));
+            });
+        }
+        {
+            KkrtNcoOtReceiver receiver;
+            receiver.configure(false, 40, 128);
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(receiver.init(maxNcoOtCount + 1, prng, sockets[0]));
+            });
+        }
+        {
+            OosNcoOtSender sender;
+            sender.configure(true, 40, 8);
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(sender.init(maxNcoOtCount + 1, prng, sockets[0]));
+            });
+        }
+        {
+            OosNcoOtReceiver receiver;
+            receiver.configure(true, 40, 8);
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(receiver.init(maxNcoOtCount + 1, prng, sockets[0]));
+            });
+        }
+
+        {
+            OosNcoOtSender sender;
+            sender.configure(true, 40, 8);
+            const auto baseCount = sender.getBaseOTCount();
+            std::vector<block> baseOts(baseCount, ZeroBlock);
+            BitVector choices(baseCount);
+            sender.setUniformBaseOts(baseOts, choices);
+
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            sockets[0].mSock->mImpl->mDebugErrorInjector = [] {
+                return cp::make_error_code(cp::code::ioError);
+            };
+            expectThrow([&] {
+                macoro::sync_wait(sender.setBaseOts(baseOts, choices, sockets[0]));
+            });
+            if (sender.hasBaseOts() || !sockets[0].closed())
+                throw UnitTestFail("failed OOS base-delta receive retained base state" LOCATION);
+        }
+        {
+            OosNcoOtReceiver receiver;
+            receiver.configure(true, 40, 8);
+            const auto baseCount = receiver.getBaseOTCount();
+            std::vector<std::array<block, 2>> baseOts(baseCount);
+            receiver.setUniformBaseOts(baseOts);
+
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            sockets[0].mSock->mImpl->mDebugErrorInjector = [] {
+                return cp::make_error_code(cp::code::ioError);
+            };
+            expectThrow([&] {
+                macoro::sync_wait(receiver.setBaseOts(baseOts, prng, sockets[0]));
+            });
+            if (receiver.hasBaseOts() || !sockets[0].closed())
+                throw UnitTestFail("failed OOS base-delta send retained base state" LOCATION);
+        }
+
+        {
+            KkrtNcoOtSender sender;
+            sender.mT.resize(1, 4);
+            sender.mCorrectionVals.resize(1, 4);
+            sender.mCorrectionIdx = 0;
+            expectThrow([&] { sender.encode(0, &input, &output, sizeof(block)); });
+
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(sender.recvCorrection(sockets[0], 2));
+            });
+        }
+        {
+            KkrtNcoOtReceiver receiver;
+            receiver.mT0.resize(1, 4);
+            receiver.mT1 = std::make_shared<Matrix<block>>(1, 4);
+            receiver.mEncodeFlags.assign(1, 0);
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(receiver.sendCorrection(sockets[0], 1));
+            });
+            expectThrow([&] { receiver.zeroEncode(1); });
+            receiver.zeroEncode(0);
+            expectThrow([&] { receiver.zeroEncode(0); });
+        }
+        {
+            OosNcoOtSender sender;
+            sender.mT.resize(1, 4);
+            sender.mCorrectionVals.resize(1, 4);
+            sender.mCorrectionIdx = 0;
+            sender.mInputByteCount = 1;
+            sender.mInputBitCount = 8;
+            expectThrow([&] { sender.encode(0, &input, &output, sizeof(block)); });
+
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(sender.recvCorrection(sockets[0], 2));
+            });
+        }
+        {
+            OosNcoOtReceiver receiver;
+            receiver.mT0.resize(1, 4);
+            receiver.mT1 = std::make_shared<Matrix<block>>(1, 4);
+            receiver.mW.resize(1, 1);
+            receiver.mEncodeFlags.assign(1, 0);
+            auto sockets = cp::LocalAsyncSocket::makePair();
+            expectThrow([&] {
+                macoro::sync_wait(receiver.sendCorrection(sockets[0], 1));
+            });
+            expectThrow([&] { receiver.zeroEncode(1); });
+            receiver.zeroEncode(0);
+            expectThrow([&] { receiver.zeroEncode(0); });
+        }
+#else
+        throw UnitTestSkipped("ENABLE_KKRT and ENABLE_OOS are required.");
+#endif
+    }
+
+
+    void NcoOt_OosMove_Test()
+    {
+#ifdef ENABLE_OOS
+        {
+            OosNcoOtReceiver source;
+            source.mMalicious = true;
+            source.mHasBase = true;
+            source.mStatSecParam = 40;
+            source.mCorrectionIdx = 7;
+            source.mInputByteCount = 3;
+            source.mInputBitCount = 17;
+            source.mChallengeSeed = block(3, 4);
+            source.mGens.resize(1);
+            source.mT0.resize(2, 4);
+            source.mT1 = std::make_shared<Matrix<block>>(2, 4);
+            source.mW.resize(2, 1);
+            source.mEncodeFlags = { 1, 0 };
+            source.mWBuff = { OneBlock };
+            source.mTBuff = { AllOneBlock };
+
+            OosNcoOtReceiver destination(std::move(source));
+            if (!destination.mMalicious || !destination.mHasBase ||
+                destination.mStatSecParam != 40 || destination.mCorrectionIdx != 7 ||
+                destination.mInputByteCount != 3 || destination.mInputBitCount != 17 ||
+                destination.mChallengeSeed != block(3, 4) || destination.mGens.size() != 1 ||
+                destination.mT0.rows() != 2 || !destination.mT1 ||
+                destination.mW.rows() != 2 || destination.mEncodeFlags.size() != 2 ||
+                destination.mWBuff.size() != 1 || destination.mTBuff.size() != 1)
+                throw UnitTestFail(LOCATION);
+
+            if (source.mMalicious || source.mHasBase || source.mStatSecParam != 0 ||
+                source.mCorrectionIdx != 0 || source.mInputByteCount != 0 ||
+                source.mInputBitCount != 0 || source.mChallengeSeed != ZeroBlock ||
+                !source.mGens.empty() || source.mT0.size() != 0 || source.mT1 ||
+                source.mW.size() != 0 || source.mHasPendingSendFuture ||
+                source.mPendingSendFuture.valid() || !source.mEncodeFlags.empty() ||
+                !source.mWBuff.empty() || !source.mTBuff.empty())
+                throw UnitTestFail(LOCATION);
+        }
+        {
+            OosNcoOtSender source;
+            source.configure(true, 40, 17);
+            source.mBaseChoiceBits.resize(1);
+            source.mChoiceBlks = { OneBlock };
+            source.mT.resize(2, 4);
+            source.mCorrectionVals.resize(2, 4);
+            source.mCorrectionIdx = 7;
+            source.mChallengeSeed = block(3, 4);
+            source.qSum = { AllOneBlock };
+
+            OosNcoOtSender destination(std::move(source));
+            if (!destination.mMalicious || destination.mStatSecParam != 40 ||
+                destination.mInputByteCount != 3 || destination.mInputBitCount != 17 ||
+                destination.mCorrectionIdx != 7 || destination.mChallengeSeed != block(3, 4) ||
+                destination.mGens.empty() || destination.mBaseChoiceBits.size() != 1 ||
+                destination.mChoiceBlks.size() != 1 || destination.mT.rows() != 2 ||
+                destination.mCorrectionVals.rows() != 2 || destination.qSum.size() != 1)
+                throw UnitTestFail(LOCATION);
+            if (source.mMalicious || source.mStatSecParam || source.mCorrectionIdx ||
+                source.mInputByteCount || source.mInputBitCount ||
+                source.mChallengeSeed != ZeroBlock || !source.mGens.empty() ||
+                source.mBaseChoiceBits.size() || !source.mChoiceBlks.empty() ||
+                source.mT.size() || source.mCorrectionVals.size() || !source.qSum.empty())
+                throw UnitTestFail(LOCATION);
+        }
+#ifdef ENABLE_KKRT
+        {
+            KkrtNcoOtSender source;
+            source.configure(false, 40, 128);
+            source.mGensBlkIdx = { 9 };
+            source.mBaseChoiceBits.resize(1);
+            source.mChoiceBlks = { OneBlock };
+            source.mT.resize(2, 4);
+            source.mCorrectionVals.resize(2, 4);
+            source.mCorrectionIdx = 7;
+
+            KkrtNcoOtSender destination(std::move(source));
+            if (destination.mGens.empty() || destination.mGensBlkIdx.size() != 1 ||
+                destination.mBaseChoiceBits.size() != 1 || destination.mChoiceBlks.size() != 1 ||
+                destination.mT.rows() != 2 || destination.mCorrectionVals.rows() != 2 ||
+                destination.mCorrectionIdx != 7 || destination.mInputByteCount != 16 ||
+                destination.mInputBitCount != 128)
+                throw UnitTestFail(LOCATION);
+            if (!source.mGens.empty() || !source.mGensBlkIdx.empty() ||
+                source.mBaseChoiceBits.size() || !source.mChoiceBlks.empty() ||
+                source.mT.size() || source.mCorrectionVals.size() || source.mCorrectionIdx ||
+                source.mInputByteCount || source.mInputBitCount)
+                throw UnitTestFail(LOCATION);
+        }
+        {
+            KkrtNcoOtReceiver source;
+            source.configure(false, 40, 128);
+            source.mGensBlkIdx = { 9 };
+            source.mT0.resize(2, 4);
+            source.mT1 = std::make_shared<Matrix<block>>(2, 4);
+            source.mEncodeFlags = { 1, 0 };
+            source.mCorrectionIdx = 7;
+
+            KkrtNcoOtReceiver destination(std::move(source));
+            if (destination.mGens.empty() || destination.mGensBlkIdx.size() != 1 ||
+                destination.mT0.rows() != 2 || !destination.mT1 ||
+                destination.mEncodeFlags.size() != 2 || destination.mCorrectionIdx != 7 ||
+                destination.mInputByteCount != 16 || destination.mInputBitCount != 128)
+                throw UnitTestFail(LOCATION);
+            if (!source.mGens.empty() || !source.mGensBlkIdx.empty() || source.mT0.size() ||
+                source.mT1 || !source.mEncodeFlags.empty() || source.mCorrectionIdx ||
+                source.mInputByteCount || source.mInputBitCount)
+                throw UnitTestFail(LOCATION);
+        }
+#endif
+#else
+        throw UnitTestSkipped("ENABLE_OOS is not defined.");
+#endif
+    }
+
+
+
+    void NcoOt_genBaseOts_Test()
+    {
+#if defined(LIBOTE_HAS_BASE_OT) && defined(ENABLE_OOS)
+
+        OosNcoOtSender sender;
+        OosNcoOtReceiver recv;
+        auto inputSize = 50;
+        sender.configure(true, 40, inputSize);
+        recv.configure(true, 40, inputSize);
+        PRNG prng(block(324, 234));
+
+        auto sock = cp::LocalAsyncSocket::makePair();
+
+        auto p0 = recv.genBaseOts(prng, sock[0]);
+        auto p1 = sender.genBaseOts(prng, sock[1]);
+
+        eval(p0, p1);
+
+        for (u64 i = 0; i < sender.mGens.size(); ++i)
+        {
+            auto b = sender.mBaseChoiceBits[i];
+            if (neq(sender.mGens[i].getSeed(), recv.mGens[i][b].getSeed()))
+                throw RTE_LOC;
+
+            if (eq(sender.mGens[i].getSeed(), recv.mGens[i][b ^ 1].getSeed()))
+                throw RTE_LOC;
+        }
+#else
+        throw UnitTestSkipped("no base OTs are enabled or ENABLE_OOS is not defined");
+#endif
+    }
+
+
+    void Tools_LinearCode_Test()
+    {
+        LinearCode code;
+
+
+        // load the data at bch511_binary
+        code.load(bch511_binary, sizeof(bch511_binary));
+
+        // You can also load it from text
+        //code.loadTxtFile(std::string(SOLUTION_DIR) + "/libOTe/Tools/bch511.txt");
+
+        // or binary file
+        //code.loadBinFile(std::string(SOLUTION_DIR) + "/libOTe/Tools/bch511.bin");
+
+        // You can also write it in any format
+        //code.writeTextFile(std::string(SOLUTION_DIR) + "/libOTe/Tools/bch511.txt");
+        //code.writeBinFile(std::string(SOLUTION_DIR) + "/libOTe/Tools/bch511.bin");
+        //code.writeBinCppFile(std::string(SOLUTION_DIR) + "/libOTe/Tools/new_bch511.h", "bch511");
+
+
+        if (code.plaintextBitSize() != 76)
+            throw UnitTestFail("bad input size reported by code");
+
+
+        if (code.codewordBitSize() != 511)
+            throw UnitTestFail("bad out size reported by code");
+
+        std::vector<block>
+            plainText(code.plaintextBlkSize(), AllOneBlock),
+            codeword(code.codewordBlkSize());
+		//span<u8>ss(plainText);
+        code.encode(plainText, codeword);
+
+        BitVector cw((u8*)codeword.data(), code.codewordBitSize());
+
+        // expect all ones
+        for (size_t i = 0; i < cw.size(); i++)
+        {
+            if (cw[i] == 0)
+            {
+                std::cout << cw << std::endl;
+                std::cout << "expecting all ones" << std::endl;
+                throw UnitTestFail(LOCATION);
+            }
+        }
+
+        BitVector pt("1111111111111111111111111111111111111111111111111101111111111101111111111111");
+        memset(plainText.data(), 0, plainText.size() * sizeof(block));
+        memcpy(plainText.data(), pt.data(), pt.sizeBytes());
+
+
+        code.encode(plainText, codeword);
+        cw.resize(0);
+        cw.append((u8*)codeword.data(), code.codewordBitSize());
+
+
+        BitVector expected("1111111111111111111111111111111111111111111111111101111111111101111111111111101000010001110100011100010110011111110010011010001010000111111001101101110101100000100010010101000110011001111101111100100111000101110000101000000011000100011110011100001101100111111001001011010100010010110001010011000011111010101010010010011101001001100001100010100101001100111000010110011110011110001110001011111101010001101000101010110100011000000011010011110101011001100011111111101001101111001111111101000010000011010111100011100");
+
+        if (cw != expected)
+        {
+            std::cout << cw << std::endl;
+            std::cout << expected << std::endl;
+            throw UnitTestFail(LOCATION);
+        }
+
+
+        code.encode_bch511((u8*)plainText.data(), (u8*)codeword.data());
+        cw.resize(0);
+        cw.append((u8*)codeword.data(), code.codewordBitSize());
+
+
+        expected = BitVector("1111111111111111111111111111111111111111111111111101111111111101111111111111101000010001110100011100010110011111110010011010001010000111111001101101110101100000100010010101000110011001111101111100100111000101110000101000000011000100011110011100001101100111111001001011010100010010110001010011000011111010101010010010011101001001100001100010100101001100111000010110011110011110001110001011111101010001101000101010110100011000000011010011110101011001100011111111101001101111001111111101000010000011010111100011100");
+
+        if (cw != expected)
+        {
+            std::cout << cw << std::endl;
+            std::cout << expected << std::endl;
+            throw UnitTestFail(LOCATION);
+        }
+
+
+
+
+    }
+
+    void Tools_LinearCode_sub_Test()
+    {
+        LinearCode code511, code128, code256, code384, code640, code1280;
+
+        code511.load(bch511_binary, sizeof(bch511_binary));
+        code128.load(code128_binary, sizeof(code128_binary));//loadTxtFile("C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code128_BCH511.txt");
+        code256.load(code256_binary, sizeof(code256_binary));//loadTxtFile("C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code256_BCH511.txt");
+        code384.load(code384_binary, sizeof(code384_binary));//loadTxtFile("C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code384_BCH511.txt");
+        code640.load(code640_binary, sizeof(code640_binary));//loadTxtFile("C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code640_BCH511.txt");
+        code1280.load(code1280_binary, sizeof(code1280_binary));//.loadTxtFile("C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code1280_BCH511.txt");
+
+        //code128.writeBinCppFile( "C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code128_BCH511.h", "code128_binary");
+        //code256.writeBinCppFile( "C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code256_BCH511.h", "code256_binary");
+        //code384.writeBinCppFile( "C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code384_BCH511.h", "code384_binary");
+        //code640.writeBinCppFile( "C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code640_BCH511.h", "code640_binary");
+        //code1280.writeBinCppFile("C:/Users/peter/repo/libOTe/libOTe_Tests/testData/code1280_BCH511.h", "code1280_binary");
+
+        BitVector
+            in(code511.plaintextBitSize()),
+            out511(code511.codewordBitSize()),
+            out128(code128.codewordBitSize()),
+            out256(code256.codewordBitSize()),
+            out384(code384.codewordBitSize()),
+            out640(code640.codewordBitSize()),
+            out1280(code1280.codewordBitSize());
+
+
+        PRNG prng(ZeroBlock);
+
+        for (u64 i = 0; i < 10; ++i)
+        {
+
+            in.randomize(prng);
+
+            code511.encode(in.data(), out511.data());
+            code128.encode(in.data(), out128.data());
+            code256.encode(in.data(), out256.data());
+            code384.encode(in.data(), out384.data());
+            code640.encode(in.data(), out640.data());
+            code1280.encode(in.data(), out1280.data());
+
+            BitVector
+                out511_128 = out511,
+                out511_256 = out511,
+                out511_384 = out511,
+                out511_640 = out511,
+                out511_1280;
+
+            u8 zero = 0;
+            out511_640.append(&zero, 1);
+            out511_640.append(out128);
+
+            out511_1280.append(out640);
+            out511_1280.append(out640);
+
+            out511_128.resize(128);
+            out511_256.resize(256);
+            out511_384.resize(384);
+
+            if (out511_128 != out128)
+            {
+                std::cout << "out511 " << out511_128 << std::endl;
+                std::cout << "out128 " << out128 << std::endl;
+                throw UnitTestFail(LOCATION);
+            }
+
+            if (out511_256 != out256)
+            {
+                std::cout << "out511 " << out511_256 << std::endl;
+                std::cout << "out256 " << out256 << std::endl;
+                throw UnitTestFail(LOCATION);
+            }
+
+            if (out511_384 != out384)
+            {
+                std::cout << "out511 " << out511_384 << std::endl;
+                std::cout << "out384 " << out384 << std::endl;
+                throw UnitTestFail(LOCATION);
+            }
+
+            if (out511_640 != out640)
+            {
+                std::cout << "out511 " << out511_640 << std::endl;
+                std::cout << "out640 " << out640 << std::endl;
+
+                for (u64 j = 0; j < 640; ++j)
+                {
+                    if (out511_640[j] == out640[j])
+                    {
+                        std::cout << " ";
+                    }
+                    else
+                    {
+                        std::cout << "^" << j;
+                    }
+                }
+
+                std::cout << std::endl;
+                throw UnitTestFail(LOCATION);
+            }
+
+            if (out511_1280 != out1280)
+            {
+                std::cout << "out511  " << out511_1280 << std::endl;
+                std::cout << "out1280 " << out1280 << std::endl;
+                throw UnitTestFail(LOCATION);
+            }
+        }
+    }
+
+    void Tools_LinearCode_rep_Test()
+    {
+        LinearCode code;
+        std::stringstream ss;
+        ss << "1 40\n1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1";
+        code.loadTxtFile(ss);
+
+        u8 bit = 1;
+        BitVector dest(40);
+        code.encode(&bit, dest.data());
+
+
+        for (u64 i = 0; i < 40; ++i)
+        {
+            if (dest[i] != 1)
+                throw UnitTestFail(LOCATION);
+        }
+    }
+
+	void Tools_LinearCode_Audit_Test()
+	{
+		auto expectThrow = [](auto&& fn) {
+			bool threw = false;
+			try
+			{
+				fn();
+			}
+			catch (const std::exception&)
+			{
+				threw = true;
+			}
+			if (!threw)
+				throw UnitTestFail("expected validation failure");
+		};
+
+		LinearCode code;
+		std::stringstream valid;
+		valid << "1 8\n1 0 1 0 1 0 1 0";
+		code.loadTxtFile(valid);
+		const auto oldPlaintextBits = code.plaintextBitSize();
+		const auto oldCodewordBits = code.codewordBitSize();
+
+		std::stringstream shortRow;
+		shortRow << "2 8\n1 0 1\n0 1 0 1 0 1 0 1";
+		expectThrow([&] { code.loadTxtFile(shortRow); });
+		if (code.plaintextBitSize() != oldPlaintextBits || code.codewordBitSize() != oldCodewordBits)
+			throw UnitTestFail("failed text load changed LinearCode state");
+
+		std::stringstream invalidBit;
+		invalidBit << "1 8\n1 0 1 x 1 0 1 0";
+		expectThrow([&] { code.loadTxtFile(invalidBit); });
+
+		std::stringstream oversized;
+		oversized << "513 8\n";
+		expectThrow([&] { code.loadTxtFile(oversized); });
+
+		u64 blocks = 1;
+		u64 codewordBits = 128;
+		std::stringstream truncated(std::ios::in | std::ios::out | std::ios::binary);
+		truncated.write(reinterpret_cast<const char*>(&blocks), sizeof(blocks));
+		truncated.write(reinterpret_cast<const char*>(&codewordBits), sizeof(codewordBits));
+		truncated.seekg(0);
+		expectThrow([&] { code.loadBinFile(truncated); });
+
+		u64 inconsistentBlocks = 3;
+		codewordBits = 129;
+		std::stringstream inconsistent(std::ios::in | std::ios::out | std::ios::binary);
+		inconsistent.write(reinterpret_cast<const char*>(&inconsistentBlocks), sizeof(inconsistentBlocks));
+		inconsistent.write(reinterpret_cast<const char*>(&codewordBits), sizeof(codewordBits));
+		std::array<block, 3> binaryRows{};
+		inconsistent.write(reinterpret_cast<const char*>(binaryRows.data()), sizeof(binaryRows));
+		inconsistent.seekg(0);
+		expectThrow([&] { code.loadBinFile(inconsistent); });
+
+		PRNG prng(block(0x1A2B3C4D, 0));
+		for (u64 inputBits : { 1ull, 9ull, 17ull, 31ull, 57ull })
+		{
+			LinearCode randomCode;
+			randomCode.random(prng, inputBits, 129);
+			std::vector<u8> input(randomCode.plaintextU8Size());
+			prng.get(input.data(), input.size());
+			std::vector<u8> actual(randomCode.codewordU8Size());
+			randomCode.encode(span<const u8>(input), span<u8>(actual));
+
+			std::vector<block> expectedBlocks(randomCode.codewordBlkSize(), ZeroBlock);
+			for (u64 bit = 0; bit < inputBits; ++bit)
+			{
+				if ((input[bit / 8] >> (bit % 8)) & 1)
+				{
+					for (u64 j = 0; j < randomCode.codewordBlkSize(); ++j)
+						expectedBlocks[j] = expectedBlocks[j] ^
+							randomCode.mG[bit * randomCode.codewordBlkSize() + j];
+				}
+			}
+			if (std::memcmp(actual.data(), expectedBlocks.data(), actual.size()) != 0)
+				throw UnitTestFail("LinearCode padded encode disagrees with scalar matrix encode");
+		}
+
+		std::array<u8, 1> message{ 1 };
+		std::array<u8, 4> word{};
+		RepetitionCode repetition(4);
+		expectThrow([&] {
+			repetition.encode(span<const u8>(message.data(), 0), span<u8>(word));
+		});
+		expectThrow([&] {
+			repetition.encode(span<const u8>(message), span<u8>(word.data(), 3));
+		});
+		expectThrow([&] { RepetitionCode invalid(0); });
+		RepetitionCode unconfigured;
+		expectThrow([&] { unconfigured.encodeSyndrome(message.data(), word.data()); });
+	}
+
+}

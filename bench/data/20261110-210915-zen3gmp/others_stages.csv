@@ -1,0 +1,112 @@
+scheme,t,stage,mean_ms_per_signer
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign r1: commit, phi^gamma",52.2909
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign r2: open (e_i, s_i)",21.2294
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign r3: R_i, pd_i",18.8937
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign: BBS+ verify",12.7015
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign: combine",13.4084
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign r1: commit, phi^gamma",51.7771
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign r2: open (e_i, s_i)",42.0835
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign r3: R_i, pd_i",18.3589
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign: BBS+ verify",18.4240
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign: combine",19.5808
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign r1: commit, phi^gamma",51.2113
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign r2: open (e_i, s_i)",62.6972
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign r3: R_i, pd_i",18.6016
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign: BBS+ verify",24.8942
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign: combine",26.5352
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign r1: commit, phi^gamma",51.5764
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign r2: open (e_i, s_i)",84.7291
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign r3: R_i, pd_i",19.0075
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign: BBS+ verify",30.9301
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign: combine",33.1080
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign r1: commit, phi^gamma",51.7295
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign r2: open (e_i, s_i)",105.5085
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign r3: R_i, pd_i",19.0681
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign: BBS+ verify",37.2196
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign: combine",39.8526
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign r1: commit, phi^gamma",51.6180
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign r2: open (e_i, s_i)",125.9336
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign r3: R_i, pd_i",19.3053
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign: BBS+ verify",43.7123
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign: combine",47.1895
+"robot-bbs (2 rounds)",2,"sign output",176.5355
+"robot-bbs (2 rounds)",2,"sign r1",84.3797
+"robot-bbs (2 rounds)",2,"sign r2",175.1081
+"robot-bbs (2 rounds)",3,"sign output",382.8159
+"robot-bbs (2 rounds)",3,"sign r1",83.1919
+"robot-bbs (2 rounds)",3,"sign r2",235.6505
+"robot-bbs (2 rounds)",4,"sign output",667.8489
+"robot-bbs (2 rounds)",4,"sign r1",86.2038
+"robot-bbs (2 rounds)",4,"sign r2",296.4915
+"robot-bbs (2 rounds)",5,"sign output",1095.1466
+"robot-bbs (2 rounds)",5,"sign r1",87.6164
+"robot-bbs (2 rounds)",5,"sign r2",368.5725
+"robot-bbs (2 rounds)",6,"sign output",1489.3003
+"robot-bbs (2 rounds)",6,"sign r1",83.3045
+"robot-bbs (2 rounds)",6,"sign r2",409.4693
+"robot-bbs (2 rounds)",7,"sign output",2052.9691
+"robot-bbs (2 rounds)",7,"sign r1",84.2225
+"robot-bbs (2 rounds)",7,"sign r2",457.3341
+"twopass-bbs (2 passes, 2 parties)",2,"sign output (verify, decrypt)",73.3348
+"twopass-bbs (2 passes, 2 parties)",2,"sign pass 1 (beta1)",0.0025
+"twopass-bbs (2 passes, 2 parties)",2,"sign pass 2 (VRF, C, D, R_CL-Lin)",39.0788
+"tx25-bbs (2 offline + 1 online)",2,"offline output",144.2415
+"tx25-bbs (2 offline + 1 online)",2,"offline r1",54.0953
+"tx25-bbs (2 offline + 1 online)",2,"offline r2",182.5294
+"tx25-bbs (2 offline + 1 online)",2,"online",3.1292
+"tx25-bbs (2 offline + 1 online)",2,"output",18.8700
+"tx25-bbs (2 offline + 1 online)",3,"offline output",239.2093
+"tx25-bbs (2 offline + 1 online)",3,"offline r1",53.1855
+"tx25-bbs (2 offline + 1 online)",3,"offline r2",254.6729
+"tx25-bbs (2 offline + 1 online)",3,"online",3.0574
+"tx25-bbs (2 offline + 1 online)",3,"output",29.2752
+"tx25-bbs (2 offline + 1 online)",4,"offline output",351.4088
+"tx25-bbs (2 offline + 1 online)",4,"offline r1",53.3418
+"tx25-bbs (2 offline + 1 online)",4,"offline r2",327.0730
+"tx25-bbs (2 offline + 1 online)",4,"online",3.0938
+"tx25-bbs (2 offline + 1 online)",4,"output",40.1549
+"tx25-bbs (2 offline + 1 online)",5,"offline output",509.7634
+"tx25-bbs (2 offline + 1 online)",5,"offline r1",54.9789
+"tx25-bbs (2 offline + 1 online)",5,"offline r2",415.1012
+"tx25-bbs (2 offline + 1 online)",5,"online",3.3055
+"tx25-bbs (2 offline + 1 online)",5,"output",53.8767
+"tx25-bbs (2 offline + 1 online)",6,"offline output",658.0346
+"tx25-bbs (2 offline + 1 online)",6,"offline r1",56.5635
+"tx25-bbs (2 offline + 1 online)",6,"offline r2",490.4757
+"tx25-bbs (2 offline + 1 online)",6,"online",3.2004
+"tx25-bbs (2 offline + 1 online)",6,"output",68.5219
+"tx25-bbs (2 offline + 1 online)",7,"offline output",874.4049
+"tx25-bbs (2 offline + 1 online)",7,"offline r1",57.0926
+"tx25-bbs (2 offline + 1 online)",7,"offline r2",580.0702
+"tx25-bbs (2 offline + 1 online)",7,"online",3.2722
+"tx25-bbs (2 offline + 1 online)",7,"output",82.9355
+"wmc24-bbs (4 rounds)",2,"sign output",162.5959
+"wmc24-bbs (4 rounds)",2,"sign r1",114.2243
+"wmc24-bbs (4 rounds)",2,"sign r2",236.6710
+"wmc24-bbs (4 rounds)",2,"sign r3",207.2990
+"wmc24-bbs (4 rounds)",2,"sign r4",85.0101
+"wmc24-bbs (4 rounds)",3,"sign output",366.6383
+"wmc24-bbs (4 rounds)",3,"sign r1",113.8639
+"wmc24-bbs (4 rounds)",3,"sign r2",308.8158
+"wmc24-bbs (4 rounds)",3,"sign r3",286.5056
+"wmc24-bbs (4 rounds)",3,"sign r4",104.3272
+"wmc24-bbs (4 rounds)",4,"sign output",657.0687
+"wmc24-bbs (4 rounds)",4,"sign r1",115.9647
+"wmc24-bbs (4 rounds)",4,"sign r2",380.8923
+"wmc24-bbs (4 rounds)",4,"sign r3",369.2069
+"wmc24-bbs (4 rounds)",4,"sign r4",124.2631
+"wmc24-bbs (4 rounds)",5,"sign output",1011.7229
+"wmc24-bbs (4 rounds)",5,"sign r1",116.5499
+"wmc24-bbs (4 rounds)",5,"sign r2",468.6154
+"wmc24-bbs (4 rounds)",5,"sign r3",450.3262
+"wmc24-bbs (4 rounds)",5,"sign r4",139.0478
+"wmc24-bbs (4 rounds)",6,"sign output",1376.4808
+"wmc24-bbs (4 rounds)",6,"sign r1",106.5302
+"wmc24-bbs (4 rounds)",6,"sign r2",485.8582
+"wmc24-bbs (4 rounds)",6,"sign r3",489.3965
+"wmc24-bbs (4 rounds)",6,"sign r4",149.5785
+"wmc24-bbs (4 rounds)",7,"sign output",1946.3785
+"wmc24-bbs (4 rounds)",7,"sign r1",108.5252
+"wmc24-bbs (4 rounds)",7,"sign r2",568.4333
+"wmc24-bbs (4 rounds)",7,"sign r3",592.7194
+"wmc24-bbs (4 rounds)",7,"sign r4",180.4003

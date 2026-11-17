@@ -1,0 +1,262 @@
+include_guard(GLOBAL)
+
+set(LIBOTE_BUILD ON)
+
+macro(EVAL var)
+     if(${ARGN})
+         set(${var} ON)
+     else()
+         set(${var} OFF)
+     endif()
+endmacro()
+
+
+if(DEFINED COPROTO_ENABLE_BOOST)
+    message("warning: setting ENABLE_BOOST as COPROTO_ENABLE_BOOST=${COPROTO_ENABLE_BOOST}")
+    set(ENABLE_BOOST ${COPROTO_ENABLE_BOOST})
+    unset(COPROTO_ENABLE_BOOST CACHE )
+endif()
+
+if(DEFINED COPROTO_ENABLE_OPENSSL)
+    set(ENABLE_OPENSSL ${COPROTO_ENABLE_OPENSSL})
+    unset(COPROTO_ENABLE_OPENSSL)
+endif()
+
+if(DEFINED ENABLE_ALL_OT)
+
+	# uses cryptoTools Edwards25519 and has a portable fallback
+	set(ENABLE_SIMPLESTOT ${ENABLE_ALL_OT} CACHE BOOL "" FORCE)
+
+	# requires sodium or relic
+	if(${ENABLE_SODIUM} OR ${ENABLE_RELIC})
+		set(oc_BB ${ENABLE_ALL_OT})
+	else()
+		set(oc_BB OFF)
+	endif()
+	set(ENABLE_NP          ${oc_BB} CACHE BOOL "" FORCE)
+
+	# uses cryptoTools Edwards25519 and has a portable fallback
+	set(ENABLE_MR ${ENABLE_ALL_OT} CACHE BOOL "" FORCE)
+
+	# uses cryptoTools Edwards25519 and has a portable fallback
+	set(ENABLE_BMM ${ENABLE_ALL_OT} CACHE BOOL "" FORCE)
+
+	# uses cryptoTools Ristretto255 and has a portable fallback
+	set(ENABLE_MRR ${ENABLE_ALL_OT} CACHE BOOL "" FORCE)
+
+	# uses cryptoTools Montgomery25519 and has a portable fallback
+	set(ENABLE_MRR_TWIST ${ENABLE_ALL_OT} CACHE BOOL "" FORCE)
+
+
+	# requires linux
+	if(UNIX AND NOT(APPLE OR MSVC))
+		set(oc_BB ${ENABLE_ALL_OT})
+	else()
+		set(oc_BB OFF)
+	endif()
+	set(ENABLE_MR_KYBER       ${oc_BB}						CACHE BOOL "" FORCE)
+
+	# general
+	set(ENABLE_KOS            ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_IKNP           ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_SOFTSPOKEN_OT  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_DELTA_KOS      ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_OOS            ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_KKRT           ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_SILENTOT		  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_SILENT_VOLE    ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_FOLEAGE		  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_RINGLPN		  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_REGULAR_DPF	  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_TERNARY_DPF	  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	set(ENABLE_SPARSE_DPF	  ${ENABLE_ALL_OT}						CACHE BOOL "" FORCE)
+	
+	unset(ENABLE_ALL_OT CACHE)
+
+endif()
+
+
+option(ENABLE_BITPOLYMUL     "Build with bit poly mul inegration" FALSE)
+option(ENABLE_MOCK_OT        "Build the insecure mock base OT" OFF)
+
+option(ENABLE_SIMPLESTOT     "Build the Edwards25519 SimplestOT base OT" OFF)
+option(ENABLE_MRR            "Build the McQuoidRosulekRoy 20 PopfOT base OT using Ristretto KA" OFF)
+option(ENABLE_MRR_TWIST      "Build the McQuoidRosulekRoy 21 PopfOT base OT using Moeller KA" OFF)
+option(ENABLE_MR             "Build the Edwards25519 MasnyRindal base OT" OFF)
+option(ENABLE_BMM            "Build the Edwards25519 Badrinarayanan-Masny-Mukherjee base OT" OFF)
+option(ENABLE_MR_KYBER       "Build the Kyber (LWE based) library and MR-Kyber base OT" OFF)
+
+option(ENABLE_KOS            "Build the KOS OT-Ext protocol." OFF)
+option(ENABLE_IKNP           "Build the IKNP OT-Ext protocol." OFF)
+option(ENABLE_SILENTOT       "Build the Slient OT protocol." OFF)
+option(ENABLE_SOFTSPOKEN_OT  "Build the SoftSpokenOT protocol." OFF)
+option(ENABLE_DELTA_KOS      "Build the KOS Delta-OT-Ext protocol." OFF)
+option(ENABLE_DELTA_IKNP     "Build the IKNP Delta-OT-Ext protocol." OFF)
+
+option(ENABLE_OOS            "Build the OOS 1-oo-N OT-Ext protocol." OFF)
+option(ENABLE_KKRT           "Build the KKRT 1-oo-N OT-Ext protocol." OFF)
+
+option(ENABLE_PPRF           "Build the PPRF protocol." OFF)
+option(ENABLE_SILENT_VOLE    "Build the Silent Vole protocol." OFF)
+option(ENABLE_LOGVOLE        "Build the LogVole protocol." ON)
+
+option(ENABLE_FOLEAGE        "Build the Foleage OLE protocol." OFF)
+option(ENABLE_RINGLPN        "Build the Foleage OLE protocol." OFF)
+
+# Make the encoder available with Silent OT/VOLE; preserve an explicit OFF.
+EVAL(LIBOTE_SPIN_DEFAULT ENABLE_SILENTOT OR ENABLE_SILENT_VOLE)
+option(ENABLE_SPIN "Enable the standalone SPIN encoder and Silent OT integration" ${LIBOTE_SPIN_DEFAULT})
+if(ENABLE_SPIN AND CMAKE_VERSION VERSION_LESS 3.20)
+    message(FATAL_ERROR "SPIN requires CMake 3.20 or newer. Set ENABLE_SPIN=OFF to omit it.")
+endif()
+if(NOT DEFINED LIBOTE_SPIN_SOURCE)
+    set(LIBOTE_SPIN_SOURCE "" CACHE PATH "Optional standalone SPIN source directory")
+endif()
+EVAL(FETCH_SPIN_IMPL ENABLE_SPIN AND NOT LIBOTE_SPIN_SOURCE AND
+    ((DEFINED FETCH_SPIN AND FETCH_SPIN) OR
+     (NOT DEFINED FETCH_SPIN AND FETCH_AUTO)))
+
+
+option(ENABLE_REGULAR_DPF    "Build the Regular DPF protocol." OFF)
+option(ENABLE_TERNARY_DPF    "Build the Ternary DPF protocol." OFF)
+option(ENABLE_SPARSE_DPF     "Build the Sparse DPF protocol." OFF)
+
+EVAL(FETCH_BITPOLYMUL_IMPL 
+	(DEFINED FETCH_BITPOLYMUL AND FETCH_BITPOLYMUL) OR
+	((NOT DEFINED FETCH_BITPOLYMUL) AND (FETCH_AUTO AND ENABLE_BITPOLYMUL)))
+
+EVAL(FETCH_SEAL_IMPL
+	(DEFINED FETCH_SEAL AND FETCH_SEAL) OR
+	((NOT DEFINED FETCH_SEAL) AND (FETCH_AUTO AND ENABLE_LOGVOLE)))
+
+# Feature dependencies. Enabling a feature turns on everything it needs, so
+# any combination of options builds. Most derived features come first.
+
+# Foleage expands its noise with the ternary DPF and generates its base
+# correlations with SoftSpoken OT.
+if(ENABLE_FOLEAGE)
+	set(ENABLE_TERNARY_DPF true)
+	set(ENABLE_SOFTSPOKEN_OT true)
+endif()
+
+# RingLPN expands its sparse noise with the RevCuckoo DMPF, uses noisy VOLE,
+# and generates its base correlations with SoftSpoken OT.
+if(ENABLE_RINGLPN)
+	set(ENABLE_SPARSE_DPF true)
+	set(ENABLE_SILENT_VOLE true)
+	set(ENABLE_SOFTSPOKEN_OT true)
+endif()
+
+if(ENABLE_SPARSE_DPF)
+	set(ENABLE_REGULAR_DPF true)
+endif()
+
+# Silent VOLE's default base type (SilentBaseType::BaseExtend) extends its
+# base OTs with SoftSpoken.
+if(ENABLE_SILENT_VOLE)
+	set(ENABLE_SOFTSPOKEN_OT true)
+endif()
+
+if(ENABLE_SILENT_VOLE OR ENABLE_SILENTOT OR ENABLE_SOFTSPOKEN_OT)
+	set(ENABLE_PPRF true)
+endif()
+
+if(ENABLE_IKNP)
+	set(ENABLE_KOS true)
+endif()
+
+option(VERBOSE_FETCH        "Print build info for fetched libraries" ON)
+
+message(STATUS "General Options\n=======================================================")
+
+message(STATUS "Option: VERBOSE_FETCH         = ${VERBOSE_FETCH}")
+message(STATUS "Option: FETCH_BITPOLYMUL      = ${FETCH_BITPOLYMUL_IMPL}\n")
+message(STATUS "Option: FETCH_SEAL            = ${FETCH_SEAL_IMPL}\n")
+message(STATUS "Option: FETCH_SPIN            = ${FETCH_SPIN_IMPL}\n")
+
+message(STATUS "Option: ENABLE_ALL_OT         = ON/OFF")
+message(STATUS "Option: ENABLE_BITPOLYMUL     = ${ENABLE_BITPOLYMUL}")
+message(STATUS "Option: LIBOTE_STD_VER        = ${LIBOTE_STD_VER}")
+
+message(STATUS "Base OT protocols\n=======================================================")
+message(STATUS "Option: ENABLE_SIMPLESTOT     = ${ENABLE_SIMPLESTOT}")
+message(STATUS "Option: ENABLE_MRR            = ${ENABLE_MRR}")
+message(STATUS "Option: ENABLE_MRR_TWIST      = ${ENABLE_MRR_TWIST}")
+message(STATUS "Option: ENABLE_MR             = ${ENABLE_MR}")
+message(STATUS "Option: ENABLE_BMM            = ${ENABLE_BMM}")
+message(STATUS "Option: ENABLE_MR_KYBER       = ${ENABLE_MR_KYBER}")
+
+message(STATUS "1-out-of-2 OT Extension protocols\n=======================================================")
+message(STATUS "Option: ENABLE_KOS            = ${ENABLE_KOS}")
+message(STATUS "Option: ENABLE_IKNP           = ${ENABLE_IKNP}")
+message(STATUS "Option: ENABLE_SILENTOT       = ${ENABLE_SILENTOT}")
+message(STATUS "Option: ENABLE_SPIN           = ${ENABLE_SPIN}")
+message(STATUS "Option: ENABLE_SOFTSPOKEN_OT  = ${ENABLE_SOFTSPOKEN_OT}\n\n")
+
+message(STATUS "1-out-of-2 Delta-OT Extension protocols\n=======================================================")
+message(STATUS "Option: ENABLE_DELTA_KOS      = ${ENABLE_DELTA_KOS}\n\n")
+
+message(STATUS "Vole protocols\n=======================================================")
+message(STATUS "Option: ENABLE_SILENT_VOLE    = ${ENABLE_SILENT_VOLE}")
+message(STATUS "Option: ENABLE_LOGVOLE        = ${ENABLE_LOGVOLE}\n\n")
+
+
+message(STATUS "DPF protocols\n=======================================================")
+message(STATUS "Option: ENABLE_REGULAR_DPF    = ${ENABLE_REGULAR_DPF}")
+message(STATUS "Option: ENABLE_SPARSE_DPF     = ${ENABLE_SPARSE_DPF}")
+message(STATUS "Option: ENABLE_TERNARY_DPF    = ${ENABLE_TERNARY_DPF}")
+message(STATUS "Option: ENABLE_PPRF           = ${ENABLE_PPRF}\n\n")
+
+message(STATUS "OLE and Triple protocols\n=======================================================")
+message(STATUS "Option: ENABLE_FOLEAGE        = ${ENABLE_FOLEAGE}")
+message(STATUS "Option: ENABLE_RINGLPN        = ${ENABLE_RINGLPN}\n\n")
+
+message(STATUS "1-out-of-N OT Extension protocols\n=======================================================")
+message(STATUS "Option: ENABLE_OOS            = ${ENABLE_OOS}")
+message(STATUS "Option: ENABLE_KKRT           = ${ENABLE_KKRT}\n\n")
+
+
+message(STATUS "other \n=======================================================")
+message(STATUS "Option: LIBOTE_SHARED         = ${LIBOTE_SHARED}\n\n")
+
+
+#############################################
+#               Config Checks               #
+#############################################
+
+if(ENABLE_MOCK_OT)
+	message("\n\nWarning: the libary is being build with insecure mock base OTs. ENABLE_MOCK_OT=${ENABLE_MOCK_OT}\n\n")
+endif()
+
+if(NOT UNIX OR APPLE OR MSVC)
+	if(ENABLE_MR_KYBER)
+		message(FATAL_ERROR "ENABLE_MR_KYBER only supported on Linux")
+	endif()
+
+endif()
+
+if( NOT ENABLE_SIMPLESTOT AND
+	NOT ENABLE_MRR AND
+	NOT ENABLE_MRR_TWIST AND
+	NOT ENABLE_MR AND
+	NOT ENABLE_BMM AND
+	NOT ENABLE_MR_KYBER)
+	message(WARNING "NO Base OT enabled.")
+endif()
+
+if(ENABLE_IKNP AND NOT ENABLE_KOS)
+	message(FATAL_ERROR "ENABLE_IKNP requires ENABLE_KOS")
+endif()
+
+
+if(LIBOTE_SHARED AND NOT ENABLE_PIC AND NOT MSVC)
+	message(FATAL_ERROR " LIBOTE_SHARED requires ENABLE_PIC. Set ENABLE_PIC to true and recompile.")
+endif()
+
+
+if(ENABLE_MR_KYBER AND ENABLE_PIC)
+	message(FATAL_ERROR " ENABLE_MR_KYBER can not be compiled with ENABLE_PIC.")
+endif()
+
+
+#include(${CMAKE_CURRENT_LIST_DIR}/../cryptoTools/cmake/cryptoToolsBuildOptions.cmake)

@@ -1,0 +1,26 @@
+scheme,t,parties,mean_ms_per_signer
+"clkem-tbbs (3 rounds, CL-KEM)",2,2,118.5240
+"clkem-tbbs (3 rounds, CL-KEM)",3,3,150.2244
+"clkem-tbbs (3 rounds, CL-KEM)",4,4,183.9396
+"clkem-tbbs (3 rounds, CL-KEM)",5,5,219.3511
+"clkem-tbbs (3 rounds, CL-KEM)",6,6,253.3784
+"clkem-tbbs (3 rounds, CL-KEM)",7,7,287.7587
+"robot-bbs (2 rounds)",2,2,436.0233
+"robot-bbs (2 rounds)",3,3,701.6583
+"robot-bbs (2 rounds)",4,4,1050.5441
+"robot-bbs (2 rounds)",5,5,1551.3354
+"robot-bbs (2 rounds)",6,6,1982.0741
+"robot-bbs (2 rounds)",7,7,2594.5257
+"twopass-bbs (2 passes, 2 parties)",2,2,112.4161
+"tx25-bbs (2 offline + 1 online)",2,2,402.8655
+"tx25-bbs (2 offline + 1 online)",3,3,579.4004
+"tx25-bbs (2 offline + 1 online)",4,4,775.0723
+"tx25-bbs (2 offline + 1 online)",5,5,1037.0258
+"tx25-bbs (2 offline + 1 online)",6,6,1276.7961
+"tx25-bbs (2 offline + 1 online)",7,7,1597.7755
+"wmc24-bbs (4 rounds)",2,2,805.8004
+"wmc24-bbs (4 rounds)",3,3,1180.1508
+"wmc24-bbs (4 rounds)",4,4,1647.3957
+"wmc24-bbs (4 rounds)",5,5,2186.2622
+"wmc24-bbs (4 rounds)",6,6,2607.8441
+"wmc24-bbs (4 rounds)",7,7,3396.4567

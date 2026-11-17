@@ -1,0 +1,1104 @@
+
+#include "RingLpn_Tests.h"
+//#include "libOTe/Triple/RingLpn/fft/RingLpnFft.h"
+#include "cryptoTools/Common/Matrix.h"
+#include "libOTe/Triple/RingLpn/RingLpnTriple.h"
+#include "coproto/Socket/LocalAsyncSock.h"
+#include "cryptoTools/Common/Timer.h"
+#include "cryptoTools/Common/TestCollection.h"
+#include "libOTe/Tools/Ntt/Poly.h"
+#include "libOTe/Tools/Ntt/NttNegWrap.h"
+#include "libOTe/Tools/Field/Fp.h"
+#include "libOTe/Tools/Field/FVec.h"
+#include "cryptoTools/Common/Log.h"
+#include "libOTe/Tools/Field/Goldilocks.h"
+
+namespace osuCrypto
+{
+#ifdef ENABLE_RINGLPN
+	// Protocol correctness tests use tiny rings that cannot target 128-bit security.
+	constexpr u64 ToyRingLpnSecurityParameter = 1;
+#endif
+
+	void RingLpn_Audit_test(const CLP&)
+	{
+#ifdef ENABLE_RINGLPN
+		using Ring = RingLpnTriple<F12289>;
+		const auto expectRejected = [](Ring& ring, u64 partyIdx, u64 n,
+			Ring::Mode mode, Ring::DpfType dpf, Ring::TensorBaseCorType base,
+			const char* message) {
+			bool rejected = false;
+			try
+			{
+				ring.init(partyIdx, n, mode, dpf, base, ToyRingLpnSecurityParameter);
+			}
+			catch (const std::invalid_argument&)
+			{
+				rejected = true;
+			}
+			if (!rejected)
+				throw UnitTestFail(message);
+		};
+
+		const auto sum = Ring::DpfType::SumDmpf;
+		const auto precomputed = Ring::TensorBaseCorType::Precomputed;
+		Ring ring;
+		ring.mPartyIdx = 1;
+		ring.mNumPolys = 2;
+		ring.mPolyWeight = 8;
+		ring.mN = 64;
+		ring.mLogN = 6;
+		expectRejected(ring, 2, 64, Ring::Mode::Ole, sum, precomputed,
+			"RingLPN accepted an invalid party index");
+		if (ring.mPartyIdx != 1 || ring.mNumPolys != 2 ||
+			ring.mPolyWeight != 8 || ring.mN != 64 || ring.mLogN != 6)
+			throw UnitTestFail("RingLPN invalid initialization changed existing state");
+
+		Ring zero;
+		expectRejected(zero, 0, 0, Ring::Mode::Ole, sum, precomputed,
+			"RingLPN accepted a zero request");
+
+		Ring tooManyPolys;
+		tooManyPolys.mNumPolys = 9;
+		tooManyPolys.mPolyWeight = 8;
+		expectRejected(tooManyPolys, 0, 64, Ring::Mode::Ole, sum, precomputed,
+			"RingLPN accepted too many polynomials");
+
+		Ring badWeight;
+		badWeight.mNumPolys = 2;
+		badWeight.mPolyWeight = 512;
+		expectRejected(badWeight, 0, 2048, Ring::Mode::Ole, sum, precomputed,
+			"RingLPN accepted a polynomial weight above 256");
+
+		Ring shallowRing;
+		shallowRing.mNumPolys = 2;
+		shallowRing.mPolyWeight = 64;
+		expectRejected(shallowRing, 0, 64, Ring::Mode::Ole, sum, precomputed,
+			"RingLPN accepted a ring smaller than two blocks");
+
+		Ring oversizedTriple;
+		expectRejected(oversizedTriple, 0, Gmw::MaxOleDimension,
+			Ring::Mode::Triple, sum, precomputed,
+			"RingLPN accepted an overflowing triple request");
+
+		Ring invalidProtocol;
+		invalidProtocol.mNumPolys = 2;
+		invalidProtocol.mPolyWeight = 8;
+		invalidProtocol.init(0, 64, Ring::Mode::Ole, sum, precomputed,
+			ToyRingLpnSecurityParameter);
+		auto badProtocol = static_cast<Ring::Protocol>(255);
+		bool countRejected = false;
+		bool readinessRejected = false;
+		try
+		{
+			std::ignore = invalidProtocol.baseCorCount(badProtocol);
+		}
+		catch (const std::invalid_argument&)
+		{
+			countRejected = true;
+		}
+		try
+		{
+			std::ignore = invalidProtocol.hasBaseCors(badProtocol);
+		}
+		catch (const std::invalid_argument&)
+		{
+			readinessRejected = true;
+		}
+		if (!countRejected || !readinessRejected)
+			throw UnitTestFail("RingLPN accepted an invalid protocol selector");
+
+		std::array<u64, 3> validSparsePositions{ 0, 3, 7 };
+		Ring::validateSparsePositionOffsets(validSparsePositions, 8);
+		std::array<u64, 3> invalidSparsePositions{ 0, 8, 7 };
+		bool sparsePositionRejected = false;
+		try
+		{
+			Ring::validateSparsePositionOffsets(invalidSparsePositions, 8);
+		}
+		catch (const std::runtime_error&)
+		{
+			sparsePositionRejected = true;
+		}
+		if (!sparsePositionRejected)
+			throw UnitTestFail("RingLPN accepted an out-of-block sparse position");
+
+		Ring reinitialized;
+		reinitialized.mNumPolys = 2;
+		reinitialized.mPolyWeight = 8;
+		reinitialized.init(0, 64, Ring::Mode::Ole, sum, precomputed,
+			ToyRingLpnSecurityParameter);
+		reinitialized.mSparseCoefficients.resize(16);
+		reinitialized.mTensoredCoefficients.resize(16 * 16);
+		reinitialized.mTensorRecvOts.resize(1);
+		reinitialized.mTensorChoice.resize(1);
+		reinitialized.mTensorSendOts.resize(1);
+		reinitialized.mProdPolyTreePosArth.resize(1);
+		reinitialized.mProdPolyTreePosXor.resize(1);
+		reinitialized.init(0, 64, Ring::Mode::Ole, sum, precomputed,
+			ToyRingLpnSecurityParameter);
+		if (!reinitialized.mSparseCoefficients.empty() ||
+			!reinitialized.mTensoredCoefficients.empty() ||
+			!reinitialized.mTensorRecvOts.empty() ||
+			reinitialized.mTensorChoice.size() ||
+			!reinitialized.mTensorSendOts.empty() ||
+			!reinitialized.mProdPolyTreePosArth.empty() ||
+			!reinitialized.mProdPolyTreePosXor.empty() ||
+			reinitialized.baseCorCount().mCoeffCount != 16)
+			throw UnitTestFail("RingLPN reinitialization retained tensor state");
+
+		reinitialized.mTensoredCoefficients.resize(16 * 16);
+		std::vector<F12289> shortA(1), longB(2), shortC(1);
+		PRNG invalidExpandPrng(block(0x1234, 0x5678));
+		auto invalidExpandSockets = coproto::LocalAsyncSocket::makePair();
+		bool invalidOutputRejected = false;
+		try
+		{
+			macoro::sync_wait(reinitialized.expand(
+				shortA, longB, shortC, invalidExpandPrng, invalidExpandSockets[0]));
+		}
+		catch (const std::runtime_error&)
+		{
+			invalidOutputRejected = true;
+		}
+		if (!invalidOutputRejected || !reinitialized.isInitialized() ||
+			reinitialized.mTensoredCoefficients.size() != 16 * 16 ||
+			invalidExpandSockets[0].closed())
+			throw UnitTestFail("RingLPN consumed state before validating its outputs");
+
+		Ring reusableSum;
+		reusableSum.mNumPolys = 2;
+		reusableSum.mPolyWeight = 8;
+		reusableSum.init(0, 64, Ring::Mode::Ole, sum, precomputed,
+			ToyRingLpnSecurityParameter);
+		reusableSum.mHasDpf = true;
+		auto& sumDpf = std::get<SumDmpf<F12289>>(reusableSum.mDpf);
+		sumDpf.mDpf.mMultiplier.mOtIdx = sumDpf.mDpf.mMultiplier.mTotalMults;
+		auto refreshed = reusableSum.baseCorCount();
+		auto sumBase = sumDpf.baseOtCount();
+		if (refreshed.mSendOtCount != sumBase.mSendCount ||
+			refreshed.mRecvOtCount != sumBase.mRecvCount ||
+			refreshed.mOleCount != 0 || refreshed.mCoeffCount != 16)
+			throw UnitTestFail("RingLPN omitted consumed Sum-DMPF base OTs");
+		std::vector<std::array<block, 2>> refreshedSend(refreshed.mSendOtCount);
+		std::vector<block> refreshedRecv(refreshed.mRecvOtCount);
+		BitVector refreshedChoices(refreshed.mRecvOtCount);
+		std::vector<F12289> refreshedCoeffs(refreshed.mCoeffCount);
+		std::vector<F12289> refreshedTensor(
+			refreshed.mCoeffCount * refreshed.mCoeffCount);
+		reusableSum.setBaseCors(
+			refreshedSend, refreshedRecv, refreshedChoices, {}, {},
+			refreshedCoeffs, refreshedTensor);
+		if (!sumDpf.hasBaseOts())
+			throw UnitTestFail("RingLPN did not install refreshed Sum-DMPF base OTs");
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+	}
+
+	void RingLpn_basic_test(const CLP& cmd)
+	{
+
+		//using F = Fp<0xFFFFFFFB, u32, u64>;
+		using F = F12289;
+
+		auto logn = 6;
+		u64 n = 1ull << logn;
+		bool verbose = cmd.isSet("v");
+		std::vector<u64> cs{ 1 };
+		u64 t = cmd.getOr("t", 8);
+		u64 c = cmd.getOr("c", 1);
+		auto blockSize = n / t;
+
+		Poly<F> xnPlus1;
+		xnPlus1[n] = 1;
+		xnPlus1[0] = 1;
+
+		std::vector<Poly<F>> as(c);
+		std::vector<Poly<F>> bs(c);
+		std::vector<Poly<F>> rs(c);
+
+		PRNG prng(block(12345, 67890));
+
+		// Generate random coefficients rs[i]
+		for (u64 i = 0; i < c; ++i) {
+			//rs[i][0] = 1; 
+			for (u64 j = 0; j < n; ++j)
+				rs[i][j] = prng.get();
+		}
+
+		// Generate sparse polynomials a[i] and b[i] with weight t
+		for (u64 i = 0; i < c; ++i) {
+
+			// Generate t random positions for non-zero coefficients
+			for (u64 j = 0; j < t; ++j)
+			{
+				as[i][j * blockSize + prng.get<u64>() % blockSize] = prng.get();
+				bs[i][j * blockSize + prng.get<u64>() % blockSize] = prng.get();
+			}
+		}
+		// this test checks the following:
+		//
+		// a' = a[0] * r[0] + a[1] * r[1] + ... + a[c-1] * r[c-1]  mod xnPlus1
+		// b' = b[0] * r[0] + b[1] * r[1] + ... + b[c-1] * r[c-1]  mod xnPlus1
+		// c' = a' * b' mod xnPlus1
+		//    = (a[0] * r[0] + a[1] * r[1] + ... + a[c-1] * r[c-1]) *
+		//      (b[0] * r[0] + b[1] * r[1] + ... + b[c-1] * r[c-1]) mod xnPlus1
+		//    = a[0] * b[0] * r[0] * r[0] +
+		//      a[0] * b[1] * r[0] * r[1] + 
+		//      ... +
+		//      a[c-1] * b[c-1] * r[c-1] * r[c-1] mod xnPlus1
+
+
+		// to match the protocol, we will have each a[i], b[i] be a polynomial
+		// of max degree n-1 and weight t.
+		// this does is just a sanity check that the RingLpnTriple
+		// and only works with Poly<F>. It does not use the RingLpnTriple
+
+		// Compute a' = sum(a[i] * r[i]) mod x^n + 1
+		Poly<F> aPrime(n);
+		for (u64 i = 0; i < c; ++i) {
+			auto scaled = as[i] * rs[i];
+			aPrime = aPrime + scaled;
+		}
+		aPrime = aPrime % xnPlus1;
+
+		// Compute b' = sum(b[i] * r[i]) mod x^n + 1
+		Poly<F> bPrime(n);
+		for (u64 i = 0; i < c; ++i) {
+			auto scaled = bs[i] * rs[i];
+			bPrime = bPrime + scaled;
+		}
+		bPrime = bPrime % xnPlus1;
+
+		// Compute c' = a' * b' mod x^n + 1
+		Poly<F> cPrime = (aPrime * bPrime) % xnPlus1;
+
+		// Compute the expected result using the expanded form
+		Poly<F> expected(n);
+		for (u64 i = 0; i < c; ++i) {
+			for (u64 j = 0; j < c; ++j) {
+				auto term = (as[i] * bs[j]) * (rs[i] * rs[j]);
+				expected = expected + term;
+			}
+		}
+		expected = expected % xnPlus1;
+
+		// Verify that c' equals the expected result
+		if (cPrime != expected) {
+			if (verbose) {
+				std::cout << "Test failed!" << std::endl;
+				std::cout << "c' = " << cPrime << std::endl;
+				std::cout << "expected = " << expected << std::endl;
+			}
+			throw RTE_LOC;
+		}
+
+		// ============ FFT/Evaluation Domain Testing ============
+
+		// Find a primitive root of unity for NTT of size 2*n
+		auto psi = primRootOfUnity<F>(2 * n);
+		std::vector<F> w(2 * n);
+		nttPrecomputeRootsOfUnity<F>(psi, w);
+		auto nw = getNegWrapRoots<F>(w, n);
+		//for (u64 i = 0; i < 2 * n; ++i) {
+		//	w[i] = psi.pow(i);
+		//}
+
+		// Convert polynomials to evaluation form using NTT
+		std::vector<F> aPrime_eval(n), bPrime_eval(n), cPrime_eval(n);
+
+		// Copy coefficients to evaluation vectors (ensure they're the right size)
+		for (u64 i = 0; i < n; ++i) {
+			aPrime_eval[i] = aPrime.getCoeff(i);
+			bPrime_eval[i] = bPrime.getCoeff(i);
+			cPrime_eval[i] = cPrime.getCoeff(i);
+		}
+
+		// Apply NTT (negative wrapped to handle x^n + 1 modulus)
+		nttNegWrapCt<F, F>(aPrime_eval, nw);
+		nttNegWrapCt<F, F>(bPrime_eval, nw);
+		nttNegWrapCt<F, F>(cPrime_eval, nw);
+
+		// Compute componentwise product in evaluation domain
+		std::vector<F> expected_eval(n);
+		for (u64 i = 0; i < n; ++i) {
+			expected_eval[i] = aPrime_eval[i] * bPrime_eval[i];
+		}
+
+		// Verify that eval(c') = eval(a') * eval(b')
+		bool evalTest = true;
+		for (u64 i = 0; i < n; ++i) {
+			if (cPrime_eval[i] != expected_eval[i]) {
+				evalTest = false;
+				if (verbose) {
+					std::cout << "FFT domain test failed at position " << i << std::endl;
+					std::cout << "eval(c')[" << i << "] = " << cPrime_eval[i] << std::endl;
+					std::cout << "eval(a')[" << i << "] * eval(b')[" << i << "] = "
+						<< expected_eval[i] << std::endl;
+				}
+				break;
+			}
+		}
+
+		if (!evalTest) {
+			throw RTE_LOC;
+		}
+
+		// Additional verification: transform back and compare with polynomial result
+		//std::vector<F> cPrime_reconstructed = cPrime_eval;
+
+		// Inverse NTT to get back to coefficient form
+		// Note: We need the inverse NTT function - this might require implementing
+		// the inverse transformation or using a different approach
+
+		if (verbose) {
+			std::cout << "FFT domain test passed!" << std::endl;
+			std::cout << "RingLpn_basic_test completed successfully with c=" << c
+				<< ", t=" << t << ", n=" << n << std::endl;
+		}
+
+	}
+#ifdef ENABLE_RINGLPN
+	template<typename F>
+	void ringSetBase(std::array<RingLpnTriple<F>, 2>& oles)
+	{
+		PRNG prng0(block(12345, 67890));
+		auto otCount0 = oles[0].baseCorCount();
+		auto otCount1 = oles[1].baseCorCount();
+		if (otCount0.mRecvOtCount != otCount1.mSendOtCount ||
+			otCount0.mSendOtCount != otCount1.mRecvOtCount)
+			throw RTE_LOC;
+		std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+		baseSend[0].resize(otCount0.mSendOtCount);
+		baseSend[1].resize(otCount1.mSendOtCount);
+		std::array<std::vector<block>, 2> baseRecv, oleMult, oleAdd;
+		std::array<BitVector, 2> baseChoice;
+
+		for (u64 i = 0; i < 2; ++i)
+		{
+			prng0.get(baseSend[i].data(), baseSend[i].size());
+			baseRecv[1 ^ i].resize(baseSend[i].size());
+			baseChoice[1 ^ i].resize(baseSend[i].size());
+			baseChoice[1 ^ i].randomize(prng0);
+			for (u64 j = 0; j < baseSend[i].size(); ++j)
+			{
+				baseRecv[1 ^ i][j] = baseSend[i][j][baseChoice[1 ^ i][j]];
+			}
+		}
+
+		std::array<std::vector<F>, 2> coeffs, tensor;
+		coeffs[0].resize(otCount0.mCoeffCount);
+		coeffs[1].resize(otCount1.mCoeffCount);
+		tensor[0].resize(otCount0.mCoeffCount * otCount0.mCoeffCount);
+		tensor[1].resize(otCount1.mCoeffCount * otCount1.mCoeffCount);
+		for (u64 i = 0; i < coeffs[0].size(); ++i)
+		{
+			coeffs[0][i] = prng0.get();
+			coeffs[1][i] = prng0.get();
+		}
+		for (u64 i = 0; i < coeffs[0].size(); ++i)
+		{
+			for (u64 j = 0; j < coeffs[0].size(); ++j)
+			{
+				auto idx = i * coeffs[0].size() + j;
+				tensor[0][idx] = prng0.get();
+				tensor[1][idx] = coeffs[0][i] * coeffs[1][j] - tensor[0][idx];
+
+				//std::cout
+				//	<< coeffs[0][i] << " * " << coeffs[1][j] << " = "
+				//	<< tensor[0][idx] << " + " << tensor[1][idx]
+				//	<< std::endl;
+
+				if ((tensor[0][idx] + tensor[1][idx]) != (coeffs[0][i] * coeffs[1][j]))
+					throw RTE_LOC;
+			}
+		}
+
+		oleMult[0].resize(otCount0.mOleCount / 128);
+		oleMult[1].resize(otCount0.mOleCount / 128);
+		oleAdd[0].resize(otCount0.mOleCount / 128);
+		oleAdd[1].resize(otCount0.mOleCount / 128);
+		prng0.get(oleMult[0].data(), oleMult[0].size());
+		prng0.get(oleMult[1].data(), oleMult[1].size());
+		prng0.get(oleAdd[0].data(), oleAdd[0].size());
+		for (u64 i = 0; i < oleAdd[1].size(); ++i)
+			oleAdd[1][i] = (oleMult[1][i] & oleMult[0][i]) ^ oleAdd[0][i];
+
+		oles[0].setBaseCors(baseSend[0], baseRecv[0], baseChoice[0], oleMult[0], oleAdd[0], coeffs[0], tensor[0]);
+		oles[1].setBaseCors(baseSend[1], baseRecv[1], baseChoice[1], oleMult[1], oleAdd[1], coeffs[1], tensor[1]);
+	}
+#endif
+
+	// This test evaluates the full PCG.Expand for both parties and
+	// checks correctness of the resulting OLE correlation.
+	void RingLpn_ole_test(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+
+		//using F = Fp<0xFFFFFFFB, u32, u64>;
+		using F = F12289;
+
+		auto logn = 6;
+		u64 n = 1ull << logn;
+		bool verbose = cmd.isSet("v");
+		std::vector<u64> cs{ cmd.getManyOr<u64>("c", {2,4}) };
+		std::vector<u64> ts{ cmd.getManyOr<u64>("t", {4,8}) };
+		auto mode = RingLpnTriple<F>::Mode::Ole;
+
+		for (auto t : ts)
+			for (auto c : cs)
+				for (auto base : { RingLpnTriple<F>::TensorBaseCorType::Precomputed, RingLpnTriple<F>::TensorBaseCorType::OtBased })
+					for (auto dpf : { RingLpnTriple<F>::DpfType::RevCuckooDmpf,RingLpnTriple<F>::DpfType::SumDmpf })
+					{
+						// RevCuckoo's RingLPN integration is maintained and tested on
+						// its separate development track.
+						if (dpf == RingLpnTriple<F>::DpfType::RevCuckooDmpf)
+							continue;
+
+						std::array<RingLpnTriple<F>, 2> oles;
+						oles[0].mPolyWeight = oles[1].mPolyWeight = t;
+						oles[0].mNumPolys = oles[1].mNumPolys = c;
+
+						oles[0].mDebug = cmd.isSet("debug");
+						oles[1].mDebug = oles[0].mDebug;
+
+						PRNG prng0(block(2424523452345, 111124521521455324));
+						PRNG prng1(block(6474567454546, 567546754674345444));
+						Timer timer;
+
+						oles[0].init(0, n, mode, dpf, base, ToyRingLpnSecurityParameter);
+						oles[1].init(1, n, mode, dpf, base, ToyRingLpnSecurityParameter);
+
+
+						ringSetBase(oles);
+
+						auto sock = coproto::LocalAsyncSocket::makePair();
+						std::vector<F>
+							A(n), B(n),
+							C0(n), C1(n);
+
+						if (verbose)
+							oles[0].setTimer(timer);
+
+						auto r = macoro::sync_wait(macoro::when_all_ready(
+							oles[0].expand(A, C0, prng0, sock[0]),
+							oles[1].expand(B, C1, prng1, sock[1])));
+						std::get<0>(r).result();
+						std::get<1>(r).result();
+
+						//Now we check that we got the correct OLE correlations and fail
+						//the test otherwise.
+						for (size_t i = 0; i < n; i++)
+						{
+							auto act = C0[i] + C1[i];
+							auto exp = A[i] * B[i];
+
+							if (exp != act)
+								throw RTE_LOC;
+						}
+
+						if (verbose)
+							std::cout << "Time taken: \n" << timer << std::endl;
+					}
+
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+
+	}
+
+	void convertToOle_Test(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+		// given ots, we convert them to OLEs.
+		u64 n = 1ull << 10;
+		std::vector<block> recvOts(n);
+		std::vector<std::array<block, 2>> sendOts(n);
+		BitVector bv(n);
+		PRNG prng(block(12345, 67890));
+
+		bv.randomize(prng);
+		prng.get(sendOts.data(), sendOts.size());
+		for (u64 i = 0; i < n; ++i)
+			recvOts[i] = sendOts[i][bv[i]];
+
+		std::array<std::vector<block>, 2> oleMult, oleAdd;
+		oleMult[0].resize(n / 128);
+		oleMult[1].resize(n / 128);
+		oleAdd[0].resize(n / 128);
+		oleAdd[1].resize(n / 128);
+
+
+		convertToOle(sendOts, oleAdd[0], oleMult[0]);
+		convertToOle(recvOts, bv, oleAdd[1], oleMult[1]);
+
+		for (u64 i = 0; i < oleAdd[0].size(); ++i)
+		{
+			if ((oleAdd[0][i] ^ oleAdd[1][i]) != (oleMult[0][i] & oleMult[1][i]))
+			{
+				std::cout << "oleAdd[0][" << i << "] = " << oleAdd[0][i] << std::endl;
+				std::cout << "oleAdd[1][" << i << "] = " << oleAdd[1][i] << std::endl;
+				std::cout << "oleMult[0][" << i << "] = " << oleMult[0][i] << std::endl;
+				std::cout << "oleMult[1][" << i << "] = " << oleMult[1][i] << std::endl;
+				std::cout << "oleAdd[0][" << i << "] ^ oleAdd[1][" << i << "] = "
+					<< (oleAdd[0][i] ^ oleAdd[1][i]) << std::endl;
+				std::cout << "oleMult[0][" << i << "] & oleMult[1][" << i << "] = "
+					<< (oleMult[0][i] & oleMult[1][i]) << std::endl;
+
+				throw RTE_LOC;
+			}
+		}
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+	}
+
+	void RingLpn_GenBase_test(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+		//using F = Fp<0xFFFFFFFB, u32, u64>;
+		using F = F12289;
+		convertToOle_Test(cmd);
+
+		auto logn = 6;
+		u64 n = 1ull << logn;
+		bool verbose = cmd.isSet("v");
+		std::vector<u64> cs{ cmd.getManyOr<u64>("c", {4}) };
+
+		std::array<RingLpnTriple<F>, 2> oles;
+
+		oles[0].mDebug = cmd.isSet("debug");
+		oles[1].mDebug = oles[0].mDebug;
+		oles[0].mNumPolys = oles[1].mNumPolys = cmd.getOr("c", 4);
+		oles[0].mPolyWeight = oles[1].mPolyWeight = cmd.getOr("t", 2);
+
+		PRNG prng0(block(2424523452345, 111124521521455324));
+		PRNG prng1(block(6474567454546, 567546754674345444));
+		Timer timer;
+
+		oles[0].init(0, n, RingLpnTriple<F>::Mode::Triple,
+			RingLpnTriple<F>::DpfType::RevCuckooDmpf,
+			RingLpnTriple<F>::TensorBaseCorType::OtBased,
+			ToyRingLpnSecurityParameter);
+		oles[1].init(1, n, RingLpnTriple<F>::Mode::Triple,
+			RingLpnTriple<F>::DpfType::RevCuckooDmpf,
+			RingLpnTriple<F>::TensorBaseCorType::OtBased,
+			ToyRingLpnSecurityParameter);
+
+		auto sock = coproto::LocalAsyncSocket::makePair();
+		std::vector<F>
+			A(n), B(n),
+			C0(n), C1(n);
+
+		if (verbose)
+			oles[0].setTimer(timer);
+
+		// Exercise the built-in base OT bootstrap, including the party-1
+		// SoftSpoken sender whose base choices must remain secret and random.
+		auto base = macoro::sync_wait(macoro::when_all_ready(
+			oles[0].genBaseCors(prng0, sock[0]),
+			oles[1].genBaseCors(prng1, sock[1])));
+		std::get<0>(base).result();
+		std::get<1>(base).result();
+
+#ifdef ENABLE_SOFTSPOKEN_OT
+		if (!oles[1].mOtExtSender ||
+			!oles[1].mOtExtSender->hasBaseOts() ||
+			!oles[0].mOtExtRecver ||
+			!oles[0].mOtExtRecver->hasBaseOts() ||
+			oles[1].mOtExtSender->delta() == ZeroBlock)
+			throw RTE_LOC;
+
+		BitVector probeChoices(128);
+		probeChoices.randomize(prng0);
+		AlignedUnVector<block> probeRecv(probeChoices.size());
+		AlignedUnVector<std::array<block, 2>> probeSend(probeChoices.size());
+		auto probe = macoro::sync_wait(macoro::when_all_ready(
+			oles[0].mOtExtRecver->receive(probeChoices, probeRecv, prng0, sock[0]),
+			oles[1].mOtExtSender->send(probeSend, prng1, sock[1])));
+		std::get<0>(probe).result();
+		std::get<1>(probe).result();
+		for (u64 i = 0; i < probeChoices.size(); ++i)
+		{
+			if (probeSend[i][0] == probeSend[i][1] ||
+				probeRecv[i] != probeSend[i][probeChoices[i]])
+				throw RTE_LOC;
+		}
+#endif
+
+		auto r = macoro::sync_wait(macoro::when_all_ready(
+			oles[0].expand(A, C0, prng0, sock[0]),
+			oles[1].expand(B, C1, prng1, sock[1])));
+		std::get<0>(r).result();
+		std::get<1>(r).result();
+
+		//Now we check that we got the correct OLE correlations and fail
+		//the test otherwise.
+		for (size_t i = 0; i < n; i++)
+		{
+			auto act = C0[i] + C1[i];
+			auto exp = A[i] * B[i];
+
+			if (exp != act)
+				throw RTE_LOC;
+		}
+
+		if (verbose)
+			std::cout << "Time taken: \n" << timer << std::endl;
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+	}
+
+	template<typename F>
+	void RingLpn_Triple_test_impl(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+
+		//using F = Fp<0xFFFFFFFB, u32, u64>;
+		//using F = F12289;
+		std::array<RingLpnTriple<F>, 2> triples;
+
+		auto logn = 5;
+		u64 n = 1ull << logn;
+		//auto blocks = divCeil(n, 128);
+		bool verbose = cmd.isSet("v");
+
+		triples[0].mNumPolys = triples[1].mNumPolys = cmd.getOr("c", 2);
+		triples[0].mPolyWeight = triples[1].mPolyWeight = cmd.getOr("t", 2);
+
+		PRNG prng0(block(2424523452345, 111124521521455324));
+		PRNG prng1(block(6474567454546, 567546754674345444));
+		Timer timer;
+
+		triples[0].init(0, n, RingLpnTriple<F>::Mode::Triple,
+			RingLpnTriple<F>::DpfType::RevCuckooDmpf,
+			RingLpnTriple<F>::TensorBaseCorType::OtBased,
+			ToyRingLpnSecurityParameter);
+		triples[1].init(1, n, RingLpnTriple<F>::Mode::Triple,
+			RingLpnTriple<F>::DpfType::RevCuckooDmpf,
+			RingLpnTriple<F>::TensorBaseCorType::OtBased,
+			ToyRingLpnSecurityParameter);
+
+		ringSetBase(triples);
+
+		if (triples[0].hasBaseCors() == false)
+			throw RTE_LOC;
+		if (triples[1].hasBaseCors() == false)
+			throw RTE_LOC;
+
+		auto sock = coproto::LocalAsyncSocket::makePair();
+		std::vector<F> A0(n), B0(n), C0(n);
+		std::vector<F> A1(n), B1(n), C1(n);
+
+		if (verbose)
+			triples[0].setTimer(timer);
+
+		// Generate triples using the 3-parameter expand function
+		auto r = macoro::sync_wait(macoro::when_all_ready(
+			triples[0].expand(A0, B0, C0, prng0, sock[0]),
+			triples[1].expand(A1, B1, C1, prng1, sock[1])));
+		std::get<0>(r).result();
+		std::get<1>(r).result();
+
+		// Verify that we got correct triple correlations
+		// Check that (A0 + A1) * (B0 + B1) = C0 + C1
+		bool allCorrect = true;
+		for (size_t i = 0; i < n && allCorrect; i++)
+		{
+			auto a = A0[i] + A1[i];  // Reconstruct A
+			auto b = B0[i] + B1[i];  // Reconstruct B  
+			auto c = C0[i] + C1[i];  // Reconstruct C
+			auto expected = a * b;   // Expected product
+
+			if (expected != c)
+			{
+				if (verbose)
+				{
+					std::cout << "Triple verification failed at index " << i << std::endl;
+					std::cout << "A = " << a << ", B = " << b << ", C = " << c << std::endl;
+					std::cout << "Expected C = A * B = " << expected << std::endl;
+				}
+				allCorrect = false;
+			}
+		}
+
+		if (!allCorrect)
+			throw RTE_LOC;
+
+		if (verbose)
+		{
+			std::cout << "[OK] All " << n << " triples verified successfully!" << std::endl;
+			std::cout << "Sample triples (first 5):" << std::endl;
+			for (u64 i = 0; i < std::min<u64>(5, n); ++i)
+			{
+				auto a = A0[i] + A1[i];
+				auto b = B0[i] + B1[i];
+				auto c = C0[i] + C1[i];
+				std::cout << "  Triple " << i << ": " << a << " * " << b << " = " << c << std::endl;
+			}
+			std::cout << "Time taken: \n" << timer << std::endl;
+		}
+
+
+#else 
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+	}
+
+
+	void RingLpn_Triple_test(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+
+		RingLpn_Triple_test_impl<F12289>(cmd);
+		RingLpn_Triple_test_impl<Fp31>(cmd);
+		RingLpn_Triple_test_impl<Goldilocks>(cmd);
+		RingLpn_Triple_test_impl<FVec<Goldilocks,2>>(cmd);
+
+#endif
+	}
+
+	template<typename F>
+	void RingLpn_stationary_test_impl(const CLP& cmd)
+	{
+
+#ifdef ENABLE_RINGLPN
+
+		//using F = Fp<0xFFFFFFFB, u32, u64>;
+		//using F = F12289;
+		//using F = Goldilocks;
+
+		auto logn = 6;
+		u64 n = 1ull << logn;
+		bool verbose = cmd.isSet("v");
+		auto mode = RingLpnTriple<F>::Mode::Ole;
+		auto dpf = static_cast<typename RingLpnTriple<F>::DpfType>(cmd.getOr(
+			"dmpf", static_cast<int>(RingLpnTriple<F>::DpfType::RevCuckooDmpf)));
+		auto tensor = RingLpnTriple<F>::TensorBaseCorType::Precomputed;
+		std::array<RingLpnTriple<F>, 2> oles;
+		u64 trials = cmd.getOr("trials", 10);
+
+		oles[0].mDebug = cmd.isSet("debug");
+		oles[1].mDebug = oles[0].mDebug;
+		oles[0].mNumPolys = oles[1].mNumPolys = cmd.getOr("c", 2);
+		oles[0].mPolyWeight = oles[1].mPolyWeight = cmd.getOr("t", 2);
+
+		PRNG prng0(block(2424523452345, 111124521521455324));
+		PRNG prng1(block(6474567454546, 567546754674345444));
+		Timer timer;
+
+		oles[0].init(0, n, mode, dpf, tensor, ToyRingLpnSecurityParameter);
+		oles[1].init(1, n, mode, dpf, tensor, ToyRingLpnSecurityParameter);
+
+		ringSetBase(oles);
+
+		auto sock = coproto::LocalAsyncSocket::makePair();
+		std::vector<F>
+			A(n), B(n),
+			C0(n), C1(n);
+
+		if (verbose)
+			oles[0].setTimer(timer);
+
+		std::vector<F> previousMasks;
+		std::array<std::vector<u64>, 2> previousPositions;
+
+		for (u64 tt = 0; tt < trials; ++tt)
+		{
+			if (tt)
+			{
+				if (dpf == RingLpnTriple<F>::DpfType::SumDmpf)
+				{
+					ringSetBase(oles);
+				}
+				else
+				{
+					auto count0 = oles[0].baseCorCount();
+					auto count1 = oles[1].baseCorCount();
+					if (count0.mOleCount != count1.mOleCount ||
+						count0.mRecvOtCount != count1.mSendOtCount ||
+						count0.mSendOtCount != count1.mRecvOtCount ||
+						count0.mCoeffCount != count1.mCoeffCount)
+					{
+						throw RTE_LOC;
+					}
+					if (count0.mOleCount || count0.mRecvOtCount)
+						throw RTE_LOC;
+					auto coeffs = count0.mCoeffCount;
+					std::vector<F> coeff0(coeffs), coeff1(coeffs);
+					for (auto& c : coeff0)
+						c = prng0.get();
+					for (auto& c : coeff1)
+						c = prng1.get();
+					std::vector<F> tensor0(coeffs * coeffs), tensor1(coeffs * coeffs);
+					for (u64 i = 0; i < coeffs; ++i)
+					{
+						for (u64 j = 0; j < coeffs; ++j)
+						{
+							auto idx = i * coeffs + j;
+							tensor0[idx] = prng0.get();
+							tensor1[idx] = coeff0[i] * coeff1[j] - tensor0[idx];
+							if ((tensor0[idx] + tensor1[idx]) != (coeff0[i] * coeff1[j]))
+								throw RTE_LOC;
+						}
+					}
+
+					oles[0].setBaseCors({}, {}, {}, {}, {}, coeff0, tensor0);
+					oles[1].setBaseCors({}, {}, {}, {}, {}, coeff1, tensor1);
+				}
+			}
+
+			auto r = macoro::sync_wait(macoro::when_all_ready(
+				oles[0].expand(A, C0, prng0, sock[0]),
+				oles[1].expand(B, C1, prng1, sock[1])));
+			std::get<0>(r).result();
+			std::get<1>(r).result();
+
+			const auto& masks = oles[0].mFftA;
+			if (masks.rows() != oles[0].mNumPolys || masks.cols() != n ||
+				oles[1].mFftA.rows() != masks.rows() || oles[1].mFftA.cols() != n)
+				throw UnitTestFail("RingLPN public mask dimensions are incorrect");
+			if (!std::equal(masks.begin(), masks.end(), oles[1].mFftA.begin()))
+				throw UnitTestFail("RingLPN parties used different public masks");
+			if (tt && std::equal(masks.begin(), masks.end(), previousMasks.begin()))
+				throw UnitTestFail("RingLPN reused public masks across expansions");
+			previousMasks.assign(masks.begin(), masks.end());
+			for (u64 i = 0; i < n; ++i)
+			{
+				if (masks(0, i) != F::one())
+					throw UnitTestFail("RingLPN mask zero is not the identity");
+				for (u64 j = 0; j < masks.rows(); ++j)
+					for (u64 k = 0; k < masks.rows(); ++k)
+						for (u64 p = 0; p < 2; ++p)
+							if (oles[p].mFftASquared(j * masks.rows() + k, i) != masks(j, i) * masks(k, i))
+								throw UnitTestFail("RingLPN product masks were not refreshed");
+			}
+			for (u64 p = 0; p < 2; ++p)
+			{
+				const auto& positions = oles[p].mSparsePositions;
+				if (tt && !std::equal(positions.begin(), positions.end(), previousPositions[p].begin()))
+					throw UnitTestFail("RingLPN mask refresh changed the cached support");
+				previousPositions[p].assign(positions.begin(), positions.end());
+			}
+
+			//Now we check that we got the correct OLE correlations and fail
+			//the test otherwise.
+			for (size_t i = 0; i < n; i++)
+			{
+				auto act = C0[i] + C1[i];
+				auto exp = A[i] * B[i];
+
+				if (exp != act)
+					throw RTE_LOC;
+			}
+		}
+
+		if (verbose)
+			std::cout << "Time taken: \n" << timer << std::endl;
+
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+
+	}
+
+	void RingLpn_stationary_test(const CLP& cmd)
+	{
+		RingLpn_stationary_test_impl<F12289>(cmd);
+		RingLpn_stationary_test_impl<Fp31>(cmd);
+		RingLpn_stationary_test_impl<Goldilocks>(cmd);
+	}
+
+
+
+	void RingLpn_conversion_test(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+		//using F = F12289;
+		using F = Fp<7, u32, u32>;
+		PRNG prng(block(12345, 67890));
+
+		struct OLE
+		{
+			std::array<F, 2> a, b;
+		};
+		auto ole = [&]() {
+			OLE ret;
+			ret.a[0] = prng.get();
+			ret.a[1] = prng.get();
+			ret.b[0] = prng.get();
+			ret.b[1] = ret.a[0] * ret.a[1] - ret.b[0];
+			return ret;
+			};
+
+		auto ole0 = ole();
+		auto ole1 = ole();
+
+		if (ole0.a[0] * ole0.a[1] != ole0.b[0] + ole0.b[1])
+		{
+			std::cout << "ole0.a[0] = " << ole0.a[0] << std::endl;
+			std::cout << "ole0.a[1] = " << ole0.a[1] << std::endl;
+			std::cout << "ole0.b[0] = " << ole0.b[0] << std::endl;
+			std::cout << "ole0.b[1] = " << ole0.b[1] << std::endl;
+			throw RTE_LOC;
+		}
+
+		if (ole1.a[0] * ole1.a[1] != ole1.b[0] + ole1.b[1])
+		{
+			std::cout << "ole1.a[0] = " << ole1.a[0] << std::endl;
+			std::cout << "ole1.a[1] = " << ole1.a[1] << std::endl;
+			std::cout << "ole1.b[0] = " << ole1.b[0] << std::endl;
+			std::cout << "ole1.b[1] = " << ole1.b[1] << std::endl;
+			throw RTE_LOC;
+		}
+
+		std::array<F, 2> a;// , b, c;
+		a[0] = ole0.a[0];
+
+		std::vector<std::array<block, 2>> sendOts(128);
+		std::vector<block> recvOts(128);
+		BitVector choices(128);
+		for (u64 i = 0; i < sendOts.size(); ++i)
+		{
+			sendOts[i][0] = prng.get();
+			sendOts[i][1] = prng.get();
+			*BitIterator(&sendOts[i][0]) = i & 1;
+			*BitIterator(&sendOts[i][1]) = (i / 3) & 1;
+			choices[i] = (i / 5) & 1;
+			recvOts[i] = sendOts[i][choices[i]];
+		}
+
+		std::vector<block> sendAdd(1), sendMult(1), recvAdd(1), recvMult(1);
+		auto recvChoices = choices;
+		convertToOle(sendOts, sendAdd, sendMult);
+		convertToOle(recvOts, recvChoices, recvAdd, recvMult);
+		for (u64 i = 0; i < sendOts.size(); ++i)
+		{
+			const u8 m0 = sendOts[i][0].get<u8>(0) & 1;
+			const u8 m1 = sendOts[i][1].get<u8>(0) & 1;
+			const u8 expectedSendMult = m0 ^ m1;
+			const u8 expectedSendAdd = m0;
+			const u8 expectedRecvMult = choices[i];
+			const u8 expectedRecvAdd = choices[i] ? m1 : m0;
+			if (u8(*BitIterator(reinterpret_cast<u8*>(sendMult.data()), i)) != expectedSendMult ||
+				u8(*BitIterator(reinterpret_cast<u8*>(sendAdd.data()), i)) != expectedSendAdd ||
+				u8(*BitIterator(reinterpret_cast<u8*>(recvMult.data()), i)) != expectedRecvMult ||
+				u8(*BitIterator(reinterpret_cast<u8*>(recvAdd.data()), i)) != expectedRecvAdd)
+				throw UnitTestFail("RingLPN OT-to-OLE bit packing changed its masks");
+		}
+
+
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+	}
+
+	void RingLpn_tensor_test(const CLP& cmd)
+	{
+#ifdef ENABLE_RINGLPN
+		//using F = Fp<0xFFFFFFFB, u32, u64>;
+		using F = Fp<17, u32, u32>;
+		using Ctx = DefaultCoeffCtx_t<F>::type;
+		Ctx ctx;
+
+		std::array<RingLpnTriple<F>, 2> oles;
+
+		PRNG prng(block(2424523452345, 111124521521455324));
+
+		oles[0].init(0, 1000, RingLpnTriple<F>::Mode::Triple,
+			RingLpnTriple<F>::DpfType::RevCuckooDmpf,
+			RingLpnTriple<F>::TensorBaseCorType::OtBased,
+			ToyRingLpnSecurityParameter);
+		oles[1].init(1, 1000, RingLpnTriple<F>::Mode::Triple,
+			RingLpnTriple<F>::DpfType::RevCuckooDmpf,
+			RingLpnTriple<F>::TensorBaseCorType::OtBased,
+			ToyRingLpnSecurityParameter);
+
+		u64 n = oles[0].mNumPolys * oles[0].mPolyWeight;
+		u64 n2 = n * n;
+		auto sock = coproto::LocalAsyncSocket::makePair();
+		std::array<std::vector<F>, 2> coeff, prod;
+		coeff[0].resize(n);
+		coeff[1].resize(n);
+		prod[0].resize(n2);
+		prod[1].resize(n2);
+
+		{
+			std::vector<F> c(n), a(n), b(n);
+
+			F d = prng.get();
+			for (auto& cc : c)
+				cc = prng.get();
+
+			DefaultBaseOT ot;
+			auto recv = NoisyVoleReceiver<F, F, Ctx>::receive(c, a, prng, ot, sock[0], ctx);
+			auto send = NoisyVoleSender<F, F, Ctx>::send(d, b, prng, ot, sock[1], ctx);
+			auto r = macoro::sync_wait(macoro::when_all_ready(std::move(recv), std::move(send)));
+
+			for (u64 i = 0; i < n; ++i)
+			{
+				//a = b + c * delta
+				if (b[i] + c[i] * d != a[i])
+				{
+					std::cout << "c[" << i << "] = " << c[i] << std::endl;
+					std::cout << "a[" << i << "] = " << a[i] << std::endl;
+					std::cout << "b[" << i << "] = " << b[i] << std::endl;
+					std::cout << "d = " << d << std::endl;
+					throw RTE_LOC;
+				}
+			}
+		}
+
+
+		std::vector<std::array<block, 2>> sendOts(n * ctx.bitSize<F>());
+		std::vector<block> recvOts(n * ctx.bitSize<F>());
+		BitVector choice(n * ctx.bitSize<F>());
+		for (u64 i = 0; i < sendOts.size(); ++i)
+		{
+			sendOts[i] = prng.get();
+			choice[i] = prng.getBit();
+			recvOts[i] = sendOts[i][choice[i]];
+		}
+
+		//auto r = macoro::sync_wait(macoro::when_all_ready(
+		//	oles[0].tensorSend(coeff[0], prod[0], sock[0], prng, sendOts),
+		//	oles[1].tensorRecv(coeff[1], prod[1], sock[1], prng, recvOts, choice)));
+
+		auto r = macoro::sync_wait(macoro::when_all_ready(
+			oles[0].tensorRecv(coeff[0], prod[0], sock[0], prng, recvOts, choice),
+			oles[1].tensorSend(coeff[1], prod[1], sock[1], prng, sendOts)));
+		std::get<0>(r).result();
+		std::get<1>(r).result();
+
+		// Now we check that we got the correct OLE correlations and fail
+		// the test otherwise.
+		for (size_t i = 0; i < n; i++)
+		{
+			for (size_t j = 0; j < n; j++)
+			{
+				auto p = j * n + i;
+				auto ci = coeff[0][i];
+				auto cj = coeff[1][j];
+				auto exp = ci * cj;
+				auto act = prod[0][p] + prod[1][p];
+				if (exp != act)
+				{
+					std::cout << "i: " << i << ", j: " << j << std::endl;
+					std::cout << "coeff[0][" << i << "] = " << ci << std::endl;
+					std::cout << "coeff[1][" << j << "] = " << cj << std::endl;
+					std::cout << "prod[0][" << p << "] = " << prod[0][p] << std::endl;
+					std::cout << "prod[1][" << p << "] = " << prod[1][p] << std::endl;
+					std::cout << "exp = " << exp << std::endl;
+					std::cout << "act = " << act << std::endl;
+
+					throw RTE_LOC;
+				}
+			}
+		}
+#else
+		throw UnitTestSkipped("ENABLE_RINGLPN not defined.");
+#endif
+	}
+}

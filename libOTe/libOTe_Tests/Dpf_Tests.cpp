@@ -1,0 +1,2831 @@
+#include "Dpf_Tests.h"
+#include "libOTe/Dpf/RegularDpf.h"
+#include "coproto/Socket/LocalAsyncSock.h"
+#include "libOTe/Dpf/SparseDpf.h"
+#include <algorithm>
+#include <numeric>
+#include "libOTe/Dpf/TernaryDpf.h"
+#include "cryptoTools/Common/TestCollection.h"
+#include "libOTe/Tools/CoeffCtx.h"
+#include "libOTe/Dpf/RevCuckooDmpf.h"
+#include "libOTe/Dpf/RevCuckoo/Equality.h"
+#include "libOTe/Dpf/RevCuckoo/GoldreichHash.h"
+#include "libOTe/Tools/Field/Fp.h"
+#include "libOTe/Dpf/SumDmpf.h"
+#include "libOTe/Dpf/CachedDpfExpansion.h"
+#include <type_traits>
+
+using namespace oc;
+
+void DpfTreeHash_Rekey_Test(const CLP&)
+{
+#ifdef ENABLE_REGULAR_DPF
+	const block seed(731, 927);
+	const AES outer(seed);
+	details::DpfTreeHash hash(seed);
+	// Replayed chunks must agree, regardless of traversal direction.
+	for (u64 counter : { 0ull, 1023ull, 1024ull, 2048ull, 1024ull, 0ull, 2047ull })
+	{
+		const AES expected(outer.ecbEncBlock(block(counter / 1024, 0x445046545245454bull)));
+		if (hash.at(counter).ecbEncBlock(OneBlock) != expected.ecbEncBlock(OneBlock))
+			throw RTE_LOC;
+	}
+	PRNG prng(seed);
+	for (u64 domain : { 2ull, 7ull, 8ull, 9ull, 1023ull, 1024ull, 1025ull, 4097ull })
+	{
+		std::vector<u64> points{ 0, domain / 2, domain - 1 };
+		std::vector<u64> values{ 37, 41, 43 };
+		std::array<RegularDpfKey, 2> keys;
+		RegularDpf<u64>::keyGen(domain, points, values, prng, keys);
+		if (keys[0].mTreeHashSeed != keys[1].mTreeHashSeed) throw RTE_LOC;
+		std::array<std::vector<u64>, 2> outputs;
+		for (u64 party = 0; party < 2; ++party)
+		{
+			std::vector<u8> bytes(keys[party].sizeBytes());
+			keys[party].toBytes(bytes);
+			RegularDpfKey restored;
+			restored.resize<u64>(domain, points.size());
+			restored.fromBytes(bytes);
+			if (!(restored == keys[party])) throw RTE_LOC;
+			outputs[party].resize(domain * points.size());
+			RegularDpf<u64>::expand(party, domain, restored,
+				[&](u64 tree, u64 leaf, u64 value, block) {
+					outputs[party][tree * domain + leaf] = value;
+				});
+		}
+		for (u64 tree = 0; tree < points.size(); ++tree)
+			for (u64 leaf = 0; leaf < domain; ++leaf)
+				if (outputs[0][tree * domain + leaf] + outputs[1][tree * domain + leaf] !=
+					(leaf == points[tree] ? values[tree] : 0))
+					throw RTE_LOC;
+	}
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF not defined.");
+#endif
+}
+
+void CachedDpf_LeafRekey_Test(const CLP&)
+{
+	// Include empty rows, partial SIMD batches, exact chunk boundaries, and
+	// boundaries inside a row after a short preceding tree.
+	const std::vector<std::vector<u64>> shapes{
+		{}, { 0, 0 }, { 1 }, { 1023 }, { 1024 }, { 1025 },
+		{ 0, 1, 7, 1015, 0, 2, 1024, 1033, 0 }, { 4097 }
+	};
+	const block publicSeed(123, 456);
+	const auto root = details::cachedDpfLeafRoot(publicSeed, 0);
+	if (root == details::cachedDpfLeafRoot(publicSeed, 1) ||
+		root == details::cachedDpfLeafRoot(publicSeed ^ OneBlock, 0))
+		throw RTE_LOC;
+	auto test = [&]<typename T>(auto context)
+	{
+		for (const auto& shape : shapes)
+		{
+			std::vector<std::vector<u32>> sets(shape.size());
+			std::vector<std::vector<block>> seeds(shape.size());
+			PRNG prng(block(981, 237));
+			for (u64 row = 0; row < shape.size(); ++row)
+			{
+				sets[row].resize(shape[row]);
+				seeds[row].resize(shape[row]);
+				for (auto& seed : seeds[row])
+					seed = prng.get<block>() & ~OneBlock;
+			}
+			std::array<block, 2> roots{ root, root };
+			std::array<std::vector<std::vector<T>>, 2> expanded;
+			std::array<std::vector<T>, 2> sums;
+			for (u64 round = 0; round < 3; ++round)
+			{
+				const AES outer(roots[0]);
+				for (u64 party = 0; party < 2; ++party)
+					details::expandCachedDpfLeaves<T>(party, sets, seeds,
+						expanded[party], sums[party], roots[party], context);
+				if (roots[0] != roots[1] ||
+					roots[0] != outer.ecbEncBlock(block(0, 0x4450464c4e455854ull)))
+					throw RTE_LOC;
+				auto zero = context.template make<T>();
+				context.zero(zero);
+				for (u64 row = 0, ordinal = 0; row < shape.size(); ++row)
+				{
+					auto sum = zero;
+					for (u64 leaf = 0; leaf < shape[row]; ++leaf, ++ordinal)
+					{
+						// Independent scalar oracle, keyed directly by flat position.
+						AES aes(outer.ecbEncBlock(block(ordinal / 1024, 0x4450464c43484e4bull)));
+						auto expected = zero;
+						context.fromBlock(expected, aes.hashBlock(seeds[row][leaf]));
+						if (!context.eq(expected, expanded[0][row][leaf]))
+							throw RTE_LOC;
+						context.plus(sum, sum, expected);
+						context.minus(expected, zero, expected);
+						if (!context.eq(expected, expanded[1][row][leaf]))
+							throw RTE_LOC;
+					}
+					if (!context.eq(sum, sums[0][row]))
+						throw RTE_LOC;
+					context.minus(sum, zero, sum);
+					if (!context.eq(sum, sums[1][row]))
+						throw RTE_LOC;
+				}
+			}
+		}
+	};
+	test.template operator()<u64>(CoeffCtxInteger{});
+	test.template operator()<block>(CoeffCtxGF128{});
+	test.template operator()<std::array<u64, 4>>(CoeffCtxArray<u64, 4>{});
+}
+
+void RegularDpf_Multiply_Test(const CLP& cmd)
+{
+#if defined(ENABLE_REGULAR_DPF) || defined(ENABLE_SPARSE_DPF)
+	u64 n = 13;
+	PRNG prng(block(231234, 321312));
+	std::array<oc::DpfMult, 2> dpf;
+	dpf[0].init(0, n);
+	dpf[1].init(1, n);
+
+	std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+	std::array<std::vector<block>, 2> recvOts;
+	std::array<BitVector, 2> choices;
+	for (u64 i = 0; i < 2; ++i)
+	{
+		sendOts[i].resize(n);
+		recvOts[i].resize(n);
+		choices[i].resize(n);
+		choices[i].randomize(prng);
+		prng.get(sendOts[i].data(), sendOts[i].size());
+		for (u64 j = 0; j < n; ++j)
+			recvOts[i][j] = sendOts[i][j][choices[i][j]];
+	}
+
+	dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+	dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+	{
+		u64 i = 0;
+		u64 a0 = dpf[0].mChoiceBits[i];
+		block A0 = block(-a0, -a0);
+		auto c00 = dpf[0].mRecvOts[i];
+
+		auto b1 = dpf[0].mSendOts[i][0] ^ dpf[0].mSendOts[i][1];
+		auto c10 = dpf[0].mSendOts[i][0];
+
+		// C0' = c00+c10+a0b1
+		auto C0 = c00 ^ c10 ^ (b1 & A0);
+
+		u64 a1 = dpf[1].mChoiceBits[i];
+		block A1 = block(-a1, -a1);
+		auto c01 = dpf[1].mRecvOts[i];
+
+		auto b0 = dpf[1].mSendOts[i][1] ^ dpf[1].mSendOts[i][1];
+		auto c11 = dpf[1].mSendOts[i][0];
+
+		// C0' = c00+c10+a0b1
+		auto C1 = c11 ^ c01 ^ (b0 & A1);
+
+		auto a = a0 ^ a1;
+		auto B = b0 ^ b1;
+		auto C = C0 ^ C1;
+
+		if (a == 0 && C != oc::ZeroBlock)
+			throw RTE_LOC;
+		if (a == 1 && C != B)
+			throw RTE_LOC;
+	}
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+
+	for (u64 i = 0; i < 10; ++i)
+	{
+		//std::cout << "-=========================-" std::endl;
+
+		for (u64 i = 0; i < 2; ++i)
+		{
+			choices[i].randomize(prng);
+			prng.get(sendOts[i].data(), sendOts[i].size());
+			for (u64 j = 0; j < n; ++j)
+				recvOts[i][j] = sendOts[i][j][choices[i][j]];
+		}
+		dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+		dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+		BitVector x0(n), x1(n);
+		x0.randomize(prng);
+		x1.randomize(prng);
+		std::vector<block> xy0(n), xy1(n), y0(n), y1(n);
+
+		prng.get(y0.data(), y0.size());
+		prng.get(y1.data(), y1.size());
+
+		macoro::sync_wait(macoro::when_all_ready(
+			dpf[0].multiply(x0, y0, xy0, sock[0]),
+			dpf[1].multiply(x1, y1, xy1, sock[1])
+		));
+
+		for (u64 j = 0; j < n; ++j)
+		{
+
+			u64 x = x0[j] ^ x1[j];
+			auto y = y0[j] ^ y1[j];
+			auto xy = xy0[j] ^ xy1[j];
+			auto exp = block(-x, -x) & y;
+			if (xy != exp)
+			{
+				std::cout << "i " << i << std::endl;
+				std::cout << "act " << xy << " " << xy0[j] << " + " << xy1[j] << std::endl;
+				std::cout << "exp " << exp << std::endl;
+				throw RTE_LOC;
+			}
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF and ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void RegularDpf_MultGeneric_Test(const CLP& cmd)
+{
+#if defined(ENABLE_REGULAR_DPF) || defined(ENABLE_SPARSE_DPF)
+
+	// Test with different coefficient types
+	auto testGenericMultiply = [&]<typename F, typename CoeffCtx>(CoeffCtx ctx) {
+		u64 n = 13;
+		auto print = cmd.isSet("print");
+		PRNG prng(block(231234, 321312));
+		std::array<oc::DpfMult, 2> dpf;
+		dpf[0].init(0, n);
+		dpf[1].init(1, n);
+
+
+
+		std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+		std::array<std::vector<block>, 2> recvOts;
+		std::array<BitVector, 2> choices;
+		for (u64 i = 0; i < 2; ++i)
+		{
+			sendOts[i].resize(n);
+			recvOts[i].resize(n);
+			choices[i].resize(n);
+		}
+
+		auto sock = coproto::LocalAsyncSocket::makePair();
+
+		for (u64 testIter = 0; testIter < 5; ++testIter)
+		{
+			// Setup fresh base OTs for each iteration
+			for (u64 i = 0; i < 2; ++i)
+			{
+				choices[i].randomize(prng);
+				prng.get(sendOts[i].data(), sendOts[i].size());
+				for (u64 j = 0; j < n; ++j)
+					recvOts[i][j] = sendOts[i][j][choices[i][j]];
+			}
+			dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+			dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+			// Generate secret shared inputs
+			BitVector x0(n), x1(n);
+			x0.randomize(prng);
+			x1.randomize(prng);
+
+			// Create coefficient vectors of type F
+			auto y0 = ctx.template makeVec<F>(n);
+			auto y1 = ctx.template makeVec<F>(n);
+			auto xy0 = ctx.template makeVec<F>(n);
+			auto xy1 = ctx.template makeVec<F>(n);
+
+			// Generate random coefficients
+			for (u64 i = 0; i < n; ++i)
+			{
+				ctx.fromBlock(y0[i], prng.get());
+				ctx.fromBlock(y1[i], prng.get());
+			}
+
+			// Perform multiplication using the generic function
+			macoro::sync_wait(macoro::when_all_ready(
+				dpf[0].multiply<F, CoeffCtx>(x0.getSpan<u8>(), span<const F>(y0.begin(), y0.end()), span<F>(xy0.begin(), xy0.end()), sock[0], ctx),
+				dpf[1].multiply<F, CoeffCtx>(x1.getSpan<u8>(), span<const F>(y1.begin(), y1.end()), span<F>(xy1.begin(), xy1.end()), sock[1], ctx)
+			));
+
+			// Verify correctness
+			for (u64 j = 0; j < n; ++j)
+			{
+				// Reconstruct secret shared values
+				u64 x = x0[j] ^ x1[j]; // x bit
+				F y, xy, expected;
+				ctx.plus(y, y0[j], y1[j]); // reconstruct y
+				ctx.plus(xy, xy0[j], xy1[j]); // reconstruct xy
+
+				// Compute expected result: x * y (bit multiplication with coefficient)
+				if (x == 1)
+					ctx.copy(expected, y);
+				else
+					ctx.zero(expected);
+
+				if (!ctx.eq(expected, xy))
+				{
+					std::cout << "Generic multiply test failed at iteration " << testIter << ", position " << j << std::endl;
+					std::cout << "x = " << x << std::endl;
+					std::cout << "y = " << ctx.str(y) << std::endl;
+					std::cout << "expected = " << ctx.str(expected) << std::endl;
+					std::cout << "actual = " << ctx.str(xy) << std::endl;
+					throw RTE_LOC;
+				}
+				if (print)
+				{
+					std::cout << "Test Iteration: " << testIter << ", Position: " << j << std::endl;
+					std::cout
+						<< "x = " << x << " (" << (x0[j] ? "1" : "0") << " + " << (x1[j] ? "1" : "0") << ")"
+						<< "\ny = " << ctx.str(y) << " (" << ctx.str(y0[j]) << " + " << ctx.str(y1[j]) << ")"
+						<< "\nxy = " << ctx.str(xy) << " (" << ctx.str(xy0[j]) << " + " << ctx.str(xy1[j]) << ")"
+						<< std::endl;
+				}
+			}
+		}
+	};
+
+	// Test with different coefficient contexts
+	testGenericMultiply.template operator() < block, CoeffCtxGF2 > (CoeffCtxGF2{});
+	testGenericMultiply.template operator() < u64, CoeffCtxInteger > (CoeffCtxInteger{});
+	testGenericMultiply.template operator() < u32, CoeffCtxInteger > (CoeffCtxInteger{});
+	testGenericMultiply.template operator() < block, CoeffCtxGF128 > (CoeffCtxGF128{});
+
+	// Test with the custom opaque type from the test file
+	//testGenericMultiply.template operator() < Opaque, CoeffCtxOpaque > (CoeffCtxOpaque{});
+
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF and ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void RegularDpf_MultSession_Test(const CLP& cmd)
+{
+#if defined(ENABLE_REGULAR_DPF) || defined(ENABLE_SPARSE_DPF)
+	u64 n = 13;
+	u64 vectorCols = 19;
+	u64 trials = 5;
+	PRNG prng(block(231234, 321312));
+	std::array<oc::DpfMult, 2> dpf;
+	dpf[0].init(0, n * trials);
+	dpf[1].init(1, n * trials);
+
+	std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+	std::array<std::vector<block>, 2> recvOts;
+	std::array<BitVector, 2> choices;
+	for (u64 i = 0; i < 2; ++i)
+	{
+		auto c = dpf[i].baseOtCount();
+		sendOts[i].resize(c);
+		recvOts[i].resize(c);
+		choices[i].resize(c);
+		choices[i].randomize(prng);
+		prng.get(sendOts[i].data(), sendOts[i].size());
+		for (u64 j = 0; j < c; ++j)
+			recvOts[i][j] = sendOts[i][j][choices[i][j]];
+	}
+
+	dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+	dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+
+	for (u64 testIter = 0; testIter < trials; ++testIter)
+	{
+		//// Reset OT indices for fresh test
+		//for (u64 i = 0; i < 2; ++i)
+		//{
+		//	choices[i].randomize(prng);
+		//	prng.get(sendOts[i].data(), sendOts[i].size());
+		//	for (u64 j = 0; j < n; ++j)
+		//		recvOts[i][j] = sendOts[i][j][choices[i][j]];
+		//}
+		//dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+		//dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+		// Setup phase: create multiplication sessions
+		BitVector x0(n), x1(n);
+		x0.randomize(prng);
+		x1.randomize(prng);
+
+		// Create sessions for both parties
+		auto sessions = macoro::sync_wait(macoro::when_all_ready(
+			dpf[0].setupMultiply(n, x0.getSpan<u8>(), sock[0]),
+			dpf[1].setupMultiply(n, x1.getSpan<u8>(), sock[1])
+		));
+
+		auto& session0 = std::get<0>(sessions).result();
+		auto& session1 = std::get<1>(sessions).result();
+
+		// check that the base OTs in the sessions are correct
+		if (session0.mRecvOts.size() != n ||
+			session0.mSendOts.size() != n ||
+			session0.mX.size() != n ||
+			session1.mRecvOts.size() != n ||
+			session1.mSendOts.size() != n ||
+			session1.mX.size() != n)
+			throw RTE_LOC;
+		for (u64 i = 0; i < n; ++i)
+		{
+			if (session0.mRecvOts[i] != session1.mSendOts[i][session0.mX[i]])
+				throw RTE_LOC;
+
+			if (session1.mRecvOts[i] != session0.mSendOts[i][session1.mX[i]])
+				throw RTE_LOC;
+		}
+
+
+		// Test multiple multiplications with the same x but different y vectors
+		for (u64 multIter = 0; multIter < 3; ++multIter)
+		{
+			Matrix<u8> y0(n, vectorCols), y1(n, vectorCols);
+			Matrix<u8> xy0(n, vectorCols), xy1(n, vectorCols);
+
+			// Generate random y vectors for both parties
+			prng.get(y0.data(), y0.size());
+			prng.get(y1.data(), y1.size());
+
+			// Perform multiplication using sessions
+			macoro::sync_wait(macoro::when_all_ready(
+				session0.multiplyMtx(y0, xy0, sock[0]),
+				session1.multiplyMtx(y1, xy1, sock[1])
+			));
+
+			// Verify correctness
+			for (u64 j = 0; j < n; ++j)
+			{
+				u64 x = x0[j] ^ x1[j]; // Reconstruct secret shared x
+
+				for (u64 k = 0; k < vectorCols; ++k)
+				{
+					auto y = y0[j][k] ^ y1[j][k]; // Reconstruct secret shared y
+					u64 xy = xy0[j][k] ^ xy1[j][k]; // Reconstruct secret shared xy
+					u64 exp = x * y; // Expected result: x[j] * y[j][k]
+
+					if (xy != exp)
+					{
+						std::cout << "testIter " << testIter << " multIter " << multIter << std::endl;
+						std::cout << "j " << j << " k " << k << std::endl;
+						std::cout << "x " << int(x) << " = " << int(x0[j]) << " ^ " << int(x1[j]) << std::endl;
+						std::cout << "y " << int(y) << " = " << int(y0[j][k]) << " ^ " << int(y1[j][k]) << std::endl;
+						std::cout << "act " << int(xy) << " = " << int(xy0[j][k]) << " ^ " << int(xy1[j][k]) << std::endl;
+						std::cout << "exp " << int(exp) << std::endl;
+						throw RTE_LOC;
+					}
+				}
+			}
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF and ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void RegularDpf_MultByte_Test(const CLP& cmd)
+{
+#if defined(ENABLE_REGULAR_DPF) || defined(ENABLE_SPARSE_DPF)
+
+	{
+		u64 n = 10;
+		u64 bitCount = 3;
+		Matrix<u8> m(n, divCeil(bitCount, 8));
+		Matrix<u8> d(n, divCeil(bitCount, 8));
+		std::vector<u8> b(divCeil(n * bitCount, 8));
+
+		PRNG prng(block(231234, 321312));
+		for (u64 i = 0; i < n; ++i)
+		{
+			for (u64 j = 0; j < bitCount; ++j)
+			{
+				*BitIterator(m[i].data(), j) = prng.getBit();
+			}
+		}
+
+		DpfMult::packBits(b, m, bitCount);
+		DpfMult::unpackBits(d, b, bitCount);
+		if (m != d)
+			throw RTE_LOC;
+	}
+
+
+	for (auto m = 1ull; m < 16; ++m)
+	{
+
+		u64 n = 13;
+		u64 m8 = divCeil(m, 8);
+
+		PRNG prng(block(231234, 321312));
+		std::array<oc::DpfMult, 2> dpf;
+		dpf[0].init(0, n);
+		dpf[1].init(1, n);
+
+		std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+		std::array<std::vector<block>, 2> recvOts;
+		std::array<BitVector, 2> choices;
+		for (u64 i = 0; i < 2; ++i)
+		{
+			sendOts[i].resize(n);
+			recvOts[i].resize(n);
+			choices[i].resize(n);
+		}
+
+		auto sock = coproto::LocalAsyncSocket::makePair();
+
+		for (u64 i = 0; i < 4; ++i)
+		{
+			//std::cout << "-=========================-" std::endl;
+
+			for (u64 i = 0; i < 2; ++i)
+			{
+				choices[i].randomize(prng);
+				prng.get(sendOts[i].data(), sendOts[i].size());
+				for (u64 j = 0; j < n; ++j)
+					recvOts[i][j] = sendOts[i][j][choices[i][j]];
+			}
+			dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+			dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+			BitVector x0(n), x1(n);
+			x0.randomize(prng);
+			x1.randomize(prng);
+			Matrix<u8> xy0(n, m8), xy1(n, m8), y0(n, m8), y1(n, m8);
+
+			//prng.get(y0.data(), y0.size());
+			//prng.get(y1.data(), y1.size());
+			for (u64 i = 0; i < n; ++i)
+			{
+				for (u64 j = 0; j < m; ++j)
+				{
+					*BitIterator(y0[i].data(), j) = prng.getBit();
+					*BitIterator(y1[i].data(), j) = prng.getBit();
+				}
+			}
+
+			macoro::sync_wait(macoro::when_all_ready(
+				dpf[0].multiply(m, x0.getSpan<u8>(), y0, xy0, sock[0]),
+				dpf[1].multiply(m, x1.getSpan<u8>(), y1, xy1, sock[1])
+			));
+
+			for (u64 j = 0; j < n; ++j)
+			{
+				for (u64 i = 0; i < m8; ++i)
+				{
+
+					u64 x = x0[j] ^ x1[j];
+					auto y = y0[j][i] ^ y1[j][i];
+					u64 xy = xy0[j][i] ^ xy1[j][i];
+					auto exp = x * y;
+					if (xy != exp)
+					{
+						std::cout << " m " << m << std::endl;
+						std::cout << "j " << j << " i " << i << std::endl;
+						std::cout << "act " << int(xy) << "=" << int(xy0[j][i]) << " + " << int(xy1[j][i]) << std::endl;
+						std::cout << "exp " << int(exp) << std::endl;
+						throw RTE_LOC;
+					}
+				}
+			}
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF and ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+
+void RegularDpf_MultBit_Test(const CLP& cmd)
+{
+#if defined(ENABLE_REGULAR_DPF) || defined(ENABLE_SPARSE_DPF)
+
+
+	u64 n = 1311;
+
+	PRNG prng(block(231234, 321312));
+	std::array<oc::DpfMult, 2> dpf;
+	dpf[0].init(0, n);
+	dpf[1].init(1, n);
+
+	std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+	std::array<std::vector<block>, 2> recvOts;
+	std::array<BitVector, 2> choices;
+	for (u64 i = 0; i < 2; ++i)
+	{
+		sendOts[i].resize(n);
+		recvOts[i].resize(n);
+		choices[i].resize(n);
+	}
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+
+	for (u64 i = 0; i < 4; ++i)
+	{
+		//std::cout << "-=========================-" std::endl;
+
+		for (u64 i = 0; i < 2; ++i)
+		{
+			choices[i].randomize(prng);
+			prng.get(sendOts[i].data(), sendOts[i].size());
+			for (u64 j = 0; j < n; ++j)
+				recvOts[i][j] = sendOts[i][j][choices[i][j]];
+		}
+		dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+		dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+		BitVector x0(n), x1(n);
+		BitVector xy0(n), xy1(n), y0(n), y1(n);
+		x0.randomize(prng);
+		x1.randomize(prng);
+		y0.randomize(prng);
+		y1.randomize(prng);
+
+		macoro::sync_wait(macoro::when_all_ready(
+			dpf[0].multiplyBits(x0, y0, xy0, sock[0]),
+			dpf[1].multiplyBits(x1, y1, xy1, sock[1])
+		));
+
+		for (u64 j = 0; j < n; ++j)
+		{
+
+			u64 x = x0[j] ^ x1[j];
+			auto y = y0[j] ^ y1[j];
+			u64 xy = xy0[j] ^ xy1[j];
+			auto exp = x & y;
+			if (xy != exp)
+			{
+				std::cout << "j " << j << " i " << i << std::endl;
+				std::cout << "x   " << int(x) << "=" << int(x0[j]) << " + " << int(x1[j]) << std::endl;
+				std::cout << "y   " << int(y) << "=" << int(y0[j]) << " + " << int(y1[j]) << std::endl;
+				std::cout << "act " << int(xy) << "=" << int(xy0[j]) << " + " << int(xy1[j]) << std::endl;
+				std::cout << "exp " << int(exp) << std::endl;
+				throw RTE_LOC;
+			}
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF and ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+struct CoeffCtxOpaque;
+struct OpaqueCtr {};
+class Opaque
+{
+private:
+	Opaque() = default;
+	Opaque(const Opaque&) = default;
+	Opaque& operator=(const Opaque&) = default;
+
+	u32 mData;
+	friend struct CoeffCtxOpaque;
+public:
+	Opaque(OpaqueCtr) {}
+};
+
+
+struct CoeffCtxOpaque
+{
+
+	void plus(Opaque& ret, const Opaque& lhs, const Opaque& rhs) { ret.mData = lhs.mData + rhs.mData; }
+	void minus(Opaque& ret, const Opaque& lhs, const Opaque& rhs) { ret.mData = lhs.mData - rhs.mData; }
+	void mul(Opaque& ret, const Opaque& lhs, const Opaque& rhs) { ret.mData = lhs.mData * rhs.mData; }
+	bool eq(Opaque& lhs, Opaque& rhs) { return lhs.mData == rhs.mData; }
+
+	template<typename F>
+	bool isField() { return false; }
+
+	// is G characteristic 2 where x+x = 0?
+	template<typename G>
+	bool characteristicTwo() { return false; }
+
+	void mulConst(Opaque& ret, const Opaque& x) { ret.mData = x.mData; }
+
+	template<typename F>
+	u64 bitSize() { return sizeof(F) * 8; }
+
+	BitVector binaryDecomposition(const Opaque& x) { return { (u8*)&x.mData, bitSize<Opaque>() }; }
+
+	bool active = true;
+	void fromBlock(Opaque& ret, const block& b) { ret.mData = b.get<u8>(0); }
+
+	// return the F element with value 2^power
+	OC_FORCEINLINE void powerOfTwo(Opaque& ret, u64 power) {
+		one(ret);
+		ret.mData <<= power;
+	}
+
+	template<typename T>
+	struct Vec
+	{
+		std::unique_ptr<T[]> mData;
+		u64 mSize = 0;
+		u64 size() const { return mSize; }
+		auto begin() { return mData.get(); }
+		auto end() { return mData.get() + size(); }
+		T& operator[](u64 i) { return mData[i]; }
+	};
+	// A vector like type that can be used to store
+	// temporaries. 
+	// 
+	// must have:
+	//  * size()
+	//  * operator[i] that returns the i'th F element reference.
+	//  * begin() iterator over the F elements
+	//  * end() iterator over the F elements
+	/*template<typename F>
+	using Vec = std::unique_ptr<F>;*/
+
+	// resize Vec<F>
+	void resize(Vec<Opaque>& f, u64 size) {
+		Vec<Opaque> ff;
+		ff.mSize = size;
+		ff.mData.reset(new Opaque[size]);
+		for (u64 i = 0; i < f.size(); ++i)
+			ff[i] = f[i];
+		f = std::move(ff);
+	}
+
+	template<typename F>
+	auto makeVec(u64 size) { Vec<F>f; resize(f, size); return f; }
+
+	template<typename F>
+	auto make() { return F{}; }
+
+	// the size of F when serialized.
+	template<typename F>
+	u64 byteSize() { return sizeof(F); }
+
+	// copy a single F element.
+	void copy(Opaque& dst, const Opaque& src) { dst.mData = src.mData; }
+
+
+	// copy [begin,...,end) into [dstBegin, ...)
+	// the iterators will point to the same types, i.e. F
+	template<typename SrcIter, typename DstIter>
+	void copy(
+		SrcIter begin,
+		SrcIter end,
+		DstIter dstBegin)
+	{
+		using F1 = std::remove_reference_t<decltype(*begin)>;
+		using F2 = std::remove_reference_t<decltype(*dstBegin)>;
+		static_assert(std::is_trivially_copyable<F1>::value, "memcpy is used so must be trivially_copyable.");
+		static_assert(std::is_same_v<F1, F2>, "src and destication types are not the same.");
+
+		memcpy((F2 * __restrict) & *dstBegin, (F1 * __restrict) & *begin, std::distance(begin, end) * sizeof(F1));
+	}
+
+	// deserialize [begin,...,end) into  [dstBegin, ...)
+	// begin will be a u8 pointer/iterator.
+	// dstBegin will be an F pointer/iterator
+	template<typename SrcIter, typename DstIter>
+	void deserialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin)
+	{
+		// as written this function is a bit more general than strictly neccessary
+		// due to serialize(...) redirecting here.
+		using SrcType = std::remove_reference_t<decltype(*begin)>;
+
+		// how many source elem do we have?
+		auto srcN = std::distance(begin, end);
+		if (srcN)
+		{
+			// the source size in bytes
+			auto n = srcN * sizeof(SrcType);
+
+			// make sure the pointer math work with this iterator type.
+			auto beginU8 = (u8*)&*begin;
+			auto dstBeginU8 = (u8*)&*dstBegin;
+
+			// memcpy the bytes
+			std::memcpy(dstBeginU8, beginU8, n);
+		}
+	}
+
+	// serialize [begin,...,end) into  [dstBegin, ...)
+	// begin will be an F pointer/iterator
+	// dstBegin will be a byte pointer/iterator.
+	template<typename SrcIter, typename DstIter>
+	void serialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin)
+	{
+		deserialize(begin, end, dstBegin);
+	}
+
+
+	template<typename F, typename Iter>
+	auto restrictPtr(Iter iter) { return iter; }
+
+
+	template<typename Iter>
+	void zero(Iter begin, Iter end)
+	{
+		while (begin != end)
+			zero(*begin++);
+	}
+	// fill the range [begin,..., end) with zeros. 
+	// begin will be an F pointer/iterator.
+	void zero(Opaque& x)
+	{
+		x.mData = 0;
+	}
+
+
+	// fill the range [begin,..., end) with ones. 
+	// begin will be an F pointer/iterator.
+	template<typename Iter>
+	void one(Iter begin, Iter end)
+	{
+		while (begin != end)
+			one(*begin++);
+	}
+
+	void one(Opaque& x)
+	{
+		x.mData = 1;
+	}
+
+	// convert F into a string
+	std::string str(Opaque& f)
+	{
+		std::stringstream ss;
+		ss << f.mData;
+		return ss.str();
+	}
+
+	void mask(Opaque& ret, const Opaque& x, const block& mask)
+	{
+		ret.mData = x.mData & mask.get<u32>(0);
+	}
+};
+
+template<typename T>
+void setActive(T&& t, bool b) {}
+void setActive(CoeffCtxOpaque& t, bool b) { t.active = b; }
+
+
+
+template<typename T, typename Ctx>
+void RegularDpf_Proto_Test_impl(const oc::CLP& cmd)
+{
+
+#ifdef ENABLE_REGULAR_DPF
+
+	PRNG prng(block(231234, cmd.getOr("seed", 7645456)));
+	u64 domain = cmd.getOr("domain", 211);
+	u64 numPoints = cmd.getOr("numPoints", 11);
+	std::vector<u64> points0(numPoints);
+	std::vector<u64> points1(numPoints);
+	typename Ctx::template Vec<T> values0;
+	typename Ctx::template Vec<T> values1;
+	Ctx ctx;
+
+	ctx.resize(values0, numPoints);
+	ctx.resize(values1, numPoints);
+	for (u64 i = 0; i < numPoints; ++i)
+	{
+		points1[i] = prng.get<u64>();
+		points0[i] = (prng.get<u64>() % domain) ^ points1[i];
+		ctx.fromBlock(values0[i], prng.get());
+		ctx.fromBlock(values1[i], prng.get());
+
+		auto vv = ctx.template make<T>();
+		auto zero = ctx.template make<T>();
+		auto neg = ctx.template make<T>();
+		ctx.zero(zero);
+		ctx.plus(vv, values0[i], values1[i]);
+		ctx.minus(neg, zero, vv);
+
+		//std::cout << "point " << i << " p = "
+		//	<< (points0[i] ^ points1[i]) << ", v = "
+		//	<< ctx.str(vv) << " = -"<< ctx.str(neg) << std::endl;
+	}
+	setActive(ctx, false);
+
+	std::array<oc::RegularDpf<T, Ctx>, 2> dpf;
+	dpf[0].init(0, domain, numPoints);
+	dpf[1].init(1, domain, numPoints);
+
+	auto baseCount = dpf[0].baseOtCount();
+
+	std::array<std::vector<block>, 2> baseRecv;
+	std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+	std::array<BitVector, 2> baseChoice;
+	baseRecv[0].resize(baseCount);
+	baseRecv[1].resize(baseCount);
+	baseSend[0].resize(baseCount);
+	baseSend[1].resize(baseCount);
+	baseChoice[0].resize(baseCount);
+	baseChoice[1].resize(baseCount);
+	baseChoice[0].randomize(prng);
+	baseChoice[1].randomize(prng);
+	for (u64 i = 0; i < baseCount; ++i)
+	{
+		baseSend[0][i] = prng.get();
+		baseSend[1][i] = prng.get();
+		baseRecv[0][i] = baseSend[1][i][baseChoice[0][i]];
+		baseRecv[1][i] = baseSend[0][i][baseChoice[1][i]];
+	}
+	dpf[0].setBaseOts(baseSend[0], baseRecv[0], baseChoice[0]);
+	dpf[1].setBaseOts(baseSend[1], baseRecv[1], baseChoice[1]);
+
+	using Vec = typename Ctx::template Vec<T>;
+
+	std::array<Vec, 2> output;
+	std::array<Matrix<u8>, 2> tags;
+	ctx.resize(output[0], numPoints * domain);
+	ctx.resize(output[1], numPoints * domain);
+	//output[0].resize(numPoints, domain);
+	//output[1].resize(numPoints, domain);
+	tags[0].resize(numPoints, domain);
+	tags[1].resize(numPoints, domain);
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+	auto r = macoro::sync_wait(macoro::when_all_ready(
+		dpf[0].expand(points0, values0, prng, sock[0], [&](auto k, auto i, auto&& v, auto&& t) { ctx.copy(output[0][k * domain + i], v); tags[0](k, i) = t.template get<u8>(0) & 1; }, ctx),
+		dpf[1].expand(points1, values1, prng, sock[1], [&](auto k, auto i, auto&& v, auto&& t) { ctx.copy(output[1][k * domain + i], v); tags[1](k, i) = t.template get<u8>(0) & 1; }, ctx)
+	));
+	std::get<0>(r).result();
+	std::get<1>(r).result();
+
+	for (u64 i = 0; i < domain; ++i)
+	{
+		for (u64 k = 0; k < numPoints; ++k)
+		{
+			auto p = points0[k] ^ points1[k];
+			auto t = i == p ? 1 : 0;
+			auto tAct = tags[0][k][i] ^ tags[1][k][i];
+
+			auto act = ctx.template make<T>();
+			ctx.plus(act, output[0][k * domain + i], output[1][k * domain + i]);
+			auto exp = ctx.template make<T>();
+			if (t)
+				ctx.plus(exp, values0[k], values1[k]);
+			else
+				ctx.zero(exp);
+
+			if (!ctx.eq(exp, act))
+			{
+				std::cout
+					<< k << " " << i << "\n"
+					<< ctx.str(output[0][k * domain + i]) << " + "
+					<< ctx.str(output[1][k * domain + i]) << " = "
+					<< ctx.str(act) << " != "
+					<< ctx.str(exp) << std::endl;
+				throw RTE_LOC;
+			}
+			if (t != tAct)
+				throw RTE_LOC;
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF not defined.");
+#endif
+}
+
+void RegularDpf_Proto_Test(const CLP& cmd)
+{
+	//RegularDpf_Proto_Test_impl<block, CoeffCtxGF2>(cmd);
+	//RegularDpf_Proto_Test_impl<u64, CoeffCtxInteger>(cmd);
+	RegularDpf_Proto_Test_impl<Opaque, CoeffCtxOpaque>(cmd);
+}
+
+void MsvcAesHashCoroutine_Regression_Test(const CLP& cmd)
+{
+	using F = F12289;
+	RegularDpf_Proto_Test_impl<F, CoeffCtxFp>(cmd);
+}
+
+void RegularDpf_Puncture_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_REGULAR_DPF
+	PRNG prng(block(231234, 321312));
+	u64 domain = cmd.getOr("domain", 8);
+	u64 numPoints = cmd.getOr("numPoints", 1);
+	std::vector<u64> points0(numPoints);
+	std::vector<u64> points1(numPoints);
+	for (u64 i = 0; i < numPoints; ++i)
+	{
+		points1[i] = prng.get<u64>();
+		points0[i] = (prng.get<u64>() % domain) ^ points1[i];
+	}
+
+	std::array<oc::RegularDpf<block>, 2> dpf;
+	dpf[0].init(0, domain, numPoints);
+	dpf[1].init(1, domain, numPoints);
+
+	auto baseCount = dpf[0].baseOtCount();
+
+	std::array<std::vector<block>, 2> baseRecv;
+	std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+	std::array<BitVector, 2> baseChoice;
+	baseRecv[0].resize(baseCount);
+	baseRecv[1].resize(baseCount);
+	baseSend[0].resize(baseCount);
+	baseSend[1].resize(baseCount);
+	baseChoice[0].resize(baseCount);
+	baseChoice[1].resize(baseCount);
+	baseChoice[0].randomize(prng);
+	baseChoice[1].randomize(prng);
+	for (u64 i = 0; i < baseCount; ++i)
+	{
+		baseSend[0][i] = prng.get();
+		baseSend[1][i] = prng.get();
+		baseRecv[0][i] = baseSend[1][i][baseChoice[0][i]];
+		baseRecv[1][i] = baseSend[0][i][baseChoice[1][i]];
+	}
+	dpf[0].setBaseOts(baseSend[0], baseRecv[0], baseChoice[0]);
+	dpf[1].setBaseOts(baseSend[1], baseRecv[1], baseChoice[1]);
+
+	std::array<Matrix<block>, 2> output;
+	std::array<Matrix<u8>, 2> tags;
+	output[0].resize(numPoints, domain);
+	output[1].resize(numPoints, domain);
+	tags[0].resize(numPoints, domain);
+	tags[1].resize(numPoints, domain);
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+	macoro::sync_wait(macoro::when_all_ready(
+		dpf[0].expand(points0, std::vector<block>{}, prng, sock[0], [&](auto k, auto i, auto v, block t) { output[0](k, i) = v; tags[0](k, i) = t.get<u8>(0) & 1; }),
+		dpf[1].expand(points1, std::vector<block>{}, prng, sock[1], [&](auto k, auto i, auto v, block t) { output[1](k, i) = v; tags[1](k, i) = t.get<u8>(0) & 1; })
+	));
+
+
+	bool failed = false;
+	for (u64 i = 0; i < domain; ++i)
+	{
+		for (u64 k = 0; k < numPoints; ++k)
+		{
+			auto p = points0[k] ^ points1[k];
+			auto act = output[0][k][i] ^ output[1][k][i];
+			auto t = i == p ? 1 : 0;
+			auto tAct = tags[0][k][i] ^ tags[1][k][i];
+			if (t == 0 && act != ZeroBlock)
+				throw RTE_LOC;
+
+			if (t == 1 && act == ZeroBlock)
+				failed = true;
+
+			if (t != tAct)
+				throw RTE_LOC;
+		}
+	}
+
+	if (failed)
+		throw RTE_LOC;
+
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF not defined.");
+#endif
+}
+
+template<typename T, typename CoeffCtx>
+void RegularDpf_keyGen_impl(const oc::CLP& cmd)
+{
+#ifdef ENABLE_REGULAR_DPF
+
+
+	PRNG prng(block(231234, 321312));
+	u64 domain = cmd.getOr("domain", 211);
+	u64 numPoints = cmd.getOr("numPoints", 11);
+	std::vector<u64> points(numPoints);
+	std::vector<u64> points0(numPoints);
+	std::vector<u64> points1(numPoints);
+
+	// Convert to use CoeffCtx for value operations
+	CoeffCtx ctx;
+	typename CoeffCtx::template Vec<T> values;
+	typename CoeffCtx::template Vec<T> values0;
+	typename CoeffCtx::template Vec<T> values1;
+	ctx.resize(values, numPoints);
+	ctx.resize(values0, numPoints);
+	ctx.resize(values1, numPoints);
+
+	for (u64 i = 0; i < numPoints; ++i)
+	{
+		points[i] = prng.get<u64>() % domain;
+		points1[i] = prng.get<u64>();
+		points0[i] = points[i] ^ points1[i];
+
+		// Use CoeffCtx for value operations instead of hardcoded block operations
+		ctx.fromBlock(values0[i], prng.get());
+		ctx.fromBlock(values1[i], prng.get());
+		ctx.plus(values[i], values0[i], values1[i]);
+	}
+
+	std::array<oc::RegularDpf<T, CoeffCtx>, 2> dpf;
+	dpf[0].init(0, domain, numPoints);
+	dpf[1].init(1, domain, numPoints);
+
+	auto baseCount = dpf[0].baseOtCount();
+
+	std::array<std::vector<block>, 2> baseRecv;
+	std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+	std::array<BitVector, 2> baseChoice;
+	baseRecv[0].resize(baseCount);
+	baseRecv[1].resize(baseCount);
+	baseSend[0].resize(baseCount);
+	baseSend[1].resize(baseCount);
+	baseChoice[0].resize(baseCount);
+	baseChoice[1].resize(baseCount);
+	baseChoice[0].randomize(prng);
+	baseChoice[1].randomize(prng);
+	for (u64 i = 0; i < baseCount; ++i)
+	{
+		baseSend[0][i] = prng.get();
+		baseSend[1][i] = prng.get();
+		baseRecv[0][i] = baseSend[1][i][baseChoice[0][i]];
+		baseRecv[1][i] = baseSend[0][i][baseChoice[1][i]];
+	}
+	dpf[0].setBaseOts(baseSend[0], baseRecv[0], baseChoice[0]);
+	dpf[1].setBaseOts(baseSend[1], baseRecv[1], baseChoice[1]);
+
+	// Convert output to use CoeffCtx
+	typename CoeffCtx::template Vec<T> output0;
+	typename CoeffCtx::template Vec<T> output1;
+	ctx.resize(output0, numPoints * domain);
+	ctx.resize(output1, numPoints * domain);
+	std::array<Matrix<u8>, 2> tags;
+	tags[0].resize(numPoints, domain);
+	tags[1].resize(numPoints, domain);
+
+	std::array<RegularDpfKey, 2> key, key2, key3;
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+
+	prng.SetSeed(block(214234, 2341234));
+
+	// The static generator draws two private root seeds, then the public
+	// tree seed. Supply that same public seed to the interactive replay.
+	PRNG replay(block(214234, 2341234));
+	(void)replay.get<block>();
+	(void)replay.get<block>();
+	const auto treeSeed = replay.get<block>();
+	dpf[0].setTreeHashSeed(treeSeed);
+	dpf[1].setTreeHashSeed(treeSeed);
+
+	// generate the keys using MPC
+	macoro::sync_wait(macoro::when_all_ready(
+		dpf[0].keyGen(points0, values0, prng, key[0], sock[0], ctx),
+		dpf[1].keyGen(points1, values1, prng, key[1], sock[1], ctx)
+	));
+
+	// real code should use:
+	//     prng.SetSeed(sysRandomSeed());
+	prng.SetSeed(block(214234, 2341234));
+
+	// generate the seeds.
+	RegularDpf<T, CoeffCtx>::keyGen(domain, span<u64>(points), values, prng, span<RegularDpfKey>(key2), ctx);
+
+	if (key[0] != key2[0])
+	{
+		// print the keys
+		std::cout << "key[0] != key2[0]" << std::endl;
+		std::cout << "cw ";
+		for (u64 i = 0; i < key[0].mCorrectionWords.rows(); ++i)
+		{
+			for (u64 j = 0; j < key[0].mCorrectionWords.cols(); ++j)
+			{
+				if (key[0].mCorrectionWords(i, j) != key2[0].mCorrectionWords(i, j) ||
+					key[0].mCorrectionBits(i, j) != key2[0].mCorrectionBits(i, j))
+					std::cout << Color::Red;
+				std::cout
+					<< key[0].mCorrectionWords(i, j) << "." << int(key[0].mCorrectionBits(i, j)) << " v "
+					<< key2[0].mCorrectionWords(i, j) << "." << int(key2[0].mCorrectionBits(i, j)) << " " << Color::Default;
+			}
+			std::cout << std::endl;
+		}
+		std::cout << " leaf ";
+		for (u64 i = 0; i < key[0].mLeafVals.size(); ++i)
+		{
+
+			if (key[0].mLeafVals[i] != key2[0].mLeafVals[i])
+				std::cout << Color::Red;
+			std::cout << int(key[0].mLeafVals[i]) << " v " << int(key2[0].mLeafVals[i]) << " " << Color::Default;
+		}
+		std::cout << std::endl;
+		throw RTE_LOC;
+	}
+	if (key[1] != key2[1])
+		throw RTE_LOC;
+
+	// serialize the seeds.
+	std::vector<u8> buff0(key2[0].sizeBytes());
+	std::vector<u8> buff1(key2[1].sizeBytes());
+	key2[0].toBytes(buff0);
+	key2[1].toBytes(buff1);
+
+	// send buffer...
+	// deserialize
+	key3[0].resize<T>(domain, numPoints, ctx);
+	key3[1].resize<T>(domain, numPoints, ctx);
+	key3[0].fromBytes(buff0);
+	key3[1].fromBytes(buff1);
+
+	if (key[0] != key3[0])
+		throw RTE_LOC;
+	if (key[1] != key3[1])
+		throw RTE_LOC;
+
+	// expand the dpf
+	RegularDpf<T, CoeffCtx>::expand(0, domain, key3[0], [&](auto k, auto i, auto&& v, block t) {
+		ctx.copy(output0[k * domain + i], v);
+		tags[0](k, i) = t.get<u8>(0) & 1;
+		}, ctx);
+	RegularDpf<T, CoeffCtx>::expand(1, domain, key3[1], [&](auto k, auto i, auto&& v, block t) {
+		ctx.copy(output1[k * domain + i], v);
+		tags[1](k, i) = t.get<u8>(0) & 1;
+		}, ctx);
+
+	// check the results
+	for (u64 i = 0; i < domain; ++i)
+	{
+		for (u64 k = 0; k < numPoints; ++k)
+		{
+			auto p = points0[k] ^ points1[k];
+
+			auto act = ctx.template make<T>();
+			ctx.plus(act, output0[k * domain + i], output1[k * domain + i]);
+
+			auto t = i == p ? 1 : 0;
+			auto tAct = tags[0][k][i] ^ tags[1][k][i];
+
+			auto exp = ctx.template make<T>();
+			if (t)
+				ctx.plus(exp, values0[k], values1[k]);
+			else
+				ctx.zero(exp);
+
+			if (!ctx.eq(exp, act))
+			{
+				throw RTE_LOC;
+			}
+			if (t != tAct)
+				throw RTE_LOC;
+		}
+	}
+
+	//PRNG prng(block(231234, 321312));
+	//u64 domain = cmd.getOr("domain", 211);
+	//u64 numPoints = cmd.getOr("numPoints", 11);
+	//std::vector<u64> points(numPoints);
+	//std::vector<u64> points0(numPoints);
+	//std::vector<u64> points1(numPoints);
+	//std::vector<T> values(numPoints);
+	//std::vector<T> values0(numPoints);
+	//std::vector<T> values1(numPoints);
+	//for (u64 i = 0; i < numPoints; ++i)
+	//{
+	//	points[i] = prng.get<u64>() % domain;
+	//	points1[i] = prng.get<u64>();
+	//	points0[i] = points[i] ^ points1[i];
+	//	values0[i] = prng.get();
+	//	values1[i] = prng.get();
+	//	values[i] = values0[i] ^ values1[i];
+	//}
+
+	//std::array<oc::RegularDpf<block>, 2> dpf;
+	//dpf[0].init(0, domain, numPoints);
+	//dpf[1].init(1, domain, numPoints);
+
+	//auto baseCount = dpf[0].baseOtCount();
+
+	//std::array<std::vector<block>, 2> baseRecv;
+	//std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+	//std::array<BitVector, 2> baseChoice;
+	//baseRecv[0].resize(baseCount);
+	//baseRecv[1].resize(baseCount);
+	//baseSend[0].resize(baseCount);
+	//baseSend[1].resize(baseCount);
+	//baseChoice[0].resize(baseCount);
+	//baseChoice[1].resize(baseCount);
+	//baseChoice[0].randomize(prng);
+	//baseChoice[1].randomize(prng);
+	//for (u64 i = 0; i < baseCount; ++i)
+	//{
+	//	baseSend[0][i] = prng.get();
+	//	baseSend[1][i] = prng.get();
+	//	baseRecv[0][i] = baseSend[1][i][baseChoice[0][i]];
+	//	baseRecv[1][i] = baseSend[0][i][baseChoice[1][i]];
+	//}
+	//dpf[0].setBaseOts(baseSend[0], baseRecv[0], baseChoice[0]);
+	//dpf[1].setBaseOts(baseSend[1], baseRecv[1], baseChoice[1]);
+
+	//std::array<Matrix<block>, 2> output;
+	//std::array<Matrix<u8>, 2> tags;
+	//output[0].resize(numPoints, domain);
+	//output[1].resize(numPoints, domain);
+	//tags[0].resize(numPoints, domain);
+	//tags[1].resize(numPoints, domain);
+
+	//std::array<RegularDpfKey, 2> key, key2, key3;
+
+	//auto sock = coproto::LocalAsyncSocket::makePair();
+
+	//prng.SetSeed(block(214234, 2341234));
+
+	//// generate the keys using MPC
+	//macoro::sync_wait(macoro::when_all_ready(
+	//	dpf[0].keyGen(points0, values0, prng, key[0], sock[0]),
+	//	dpf[1].keyGen(points1, values1, prng, key[1], sock[1])
+	//));
+
+
+
+
+
+
+	//// real code should use:
+	////     prng.SetSeed(sysRandomSeed());
+	//prng.SetSeed(block(214234, 2341234));
+
+	//// generate the seeds.
+	//RegularDpf<block>::keyGen(domain, span<u64>(points), span<block>(values), prng, span<RegularDpfKey>(key2));
+
+	//if (key[0] != key2[0])
+	//{
+	//	// pritn the keys
+	//	std::cout << "key[0] != key2[0]" << std::endl;
+	//	std::cout << "cw ";
+	//	for (u64 i = 0; i < key[0].mCorrectionWords.rows(); ++i)
+	//	{
+	//		for (u64 j = 0; j < key[0].mCorrectionWords.cols(); ++j)
+	//		{
+	//			std::cout 
+	//				<< key[0].mCorrectionWords(i, j) << "." << int(key[0].mCorrectionBits(i,j)) << " v " 
+	//				<< key2[0].mCorrectionWords(i, j) << "." << int(key2[0].mCorrectionBits(i, j)) << " ";
+	//		}
+	//		std::cout << std::endl;
+	//	}
+	//	std::cout << " leaf ";
+	//	for (u64 i = 0; i < key[0].mLeafVals.size(); ++i)
+	//	{
+	//		std::cout << int(key[0].mLeafVals[i]) << " v " << int(key2[0].mLeafVals[i]) << " ";
+	//	}
+
+
+	//	throw RTE_LOC;
+	//}
+	//if (key[1] != key2[1])
+	//	throw RTE_LOC;
+
+	//// serialize the seeds.
+	//std::vector<u8> buff0(key2[0].sizeBytes());
+	//std::vector<u8> buff1(key2[1].sizeBytes());
+	//key2[0].toBytes(buff0);
+	//key2[1].toBytes(buff1);
+
+	//// send buffer...
+	//// deserialize
+	//key3[0].resize<block>(domain, numPoints);
+	//key3[1].resize<block>(domain, numPoints);
+	//key3[0].fromBytes(buff0);
+	//key3[1].fromBytes(buff1);
+
+	//if (key[0] != key3[0])
+	//	throw RTE_LOC;
+	//if (key[1] != key3[1])
+	//	throw RTE_LOC;
+
+	//// expand the dpf
+	//RegularDpf<block>::expand(0, domain, key3[0], [&](auto k, auto i, auto v, block t) { output[0](k, i) = v; tags[0](k, i) = t.get<u8>(0) & 1; });
+	//RegularDpf<block>::expand(1, domain, key3[1], [&](auto k, auto i, auto v, block t) { output[1](k, i) = v; tags[1](k, i) = t.get<u8>(0) & 1; });
+
+	//// check the results
+	//for (u64 i = 0; i < domain; ++i)
+	//{
+	//	for (u64 k = 0; k < numPoints; ++k)
+	//	{
+	//		auto p = points0[k] ^ points1[k];
+	//		auto act = output[0][k][i] ^ output[1][k][i];
+	//		auto t = i == p ? 1 : 0;
+	//		auto tAct = tags[0][k][i] ^ tags[1][k][i];
+	//		auto exp = t ? (values0[k] ^ values1[k]) : ZeroBlock;
+	//		if (exp != act)
+	//		{
+
+	//			throw RTE_LOC;
+	//		}
+	//		if (t != tAct)
+	//			throw RTE_LOC;
+	//	}
+	//}
+
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF not defined.");
+#endif
+}
+
+void RegularDpf_keyGen_Test(const oc::CLP& cmd)
+{
+	RegularDpf_keyGen_impl<block, CoeffCtxGF2>(cmd);
+	RegularDpf_keyGen_impl<u64, CoeffCtxInteger>(cmd);
+}
+
+void SumDmpf_Proto_Test(const oc::CLP& cmd)
+{
+
+#ifdef ENABLE_REGULAR_DPF
+
+	PRNG prng(block(231234, 321312));
+	u64 domain = cmd.getOr("domain", 211);
+	u64 numPoints = cmd.getOr("numPoints", 11);
+	u64 numSets = cmd.getOr("numSets", 3);
+	Matrix<u64> points(numSets, numPoints);
+	Matrix<u64> points0(numSets, numPoints);
+	Matrix<u64> points1(numSets, numPoints);
+	Matrix<block> values(numSets, numPoints);
+	Matrix<block> values0(numSets, numPoints);
+	Matrix<block> values1(numSets, numPoints);
+	for (u64 i = 0; i < numSets; ++i)
+	{
+		std::set<u64> uniquePoints;
+		for (u64 j = 0; j < numPoints; ++j)
+		{
+			u64 p;
+			do {
+				p = prng.get<u64>() % domain;
+			} while (!uniquePoints.insert(p).second);
+
+			points(i, j) = p;
+			points1(i, j) = prng.get<u64>();
+			points0(i, j) = points(i, j) ^ points1(i, j);
+			values0(i, j) = prng.get();
+			values1(i, j) = prng.get();
+			values(i, j) = values0(i, j) ^ values1(i, j);
+		}
+		points(i) = prng.get<u64>() % domain;
+		points1(i) = prng.get<u64>();
+		points0(i) = points(i) ^ points1(i);
+		values0(i) = prng.get();
+		values1(i) = prng.get();
+		values(i) = values0(i) ^ values1(i);
+	}
+
+	std::array<oc::SumDmpf<block>, 2> dpf;
+	dpf[0].init(0, domain, numPoints, numSets);
+	dpf[1].init(1, domain, numPoints, numSets);
+
+	auto baseCount0 = dpf[0].baseOtCount();
+	auto baseCount1 = dpf[1].baseOtCount();
+
+	std::array<std::vector<block>, 2> baseRecv;
+	std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+	std::array<BitVector, 2> baseChoice;
+	baseRecv[0].resize(baseCount0.mRecvCount);
+	baseRecv[1].resize(baseCount1.mRecvCount);
+	baseSend[0].resize(baseCount0.mSendCount);
+	baseSend[1].resize(baseCount1.mSendCount);
+	baseChoice[0].resize(baseCount0.mRecvCount);
+	baseChoice[1].resize(baseCount1.mRecvCount);
+	baseChoice[0].randomize(prng);
+	baseChoice[1].randomize(prng);
+	if(baseCount0.mRecvCount != baseCount1.mRecvCount)
+		throw RTE_LOC;
+	for (u64 i = 0; i < baseCount0.mRecvCount; ++i)
+	{
+		baseSend[0][i] = prng.get();
+		baseSend[1][i] = prng.get();
+		baseRecv[0][i] = baseSend[1][i][baseChoice[0][i]];
+		baseRecv[1][i] = baseSend[0][i][baseChoice[1][i]];
+	}
+	dpf[0].setBaseOts(baseSend[0], baseRecv[0], baseChoice[0]);
+	dpf[1].setBaseOts(baseSend[1], baseRecv[1], baseChoice[1]);
+
+	std::array<Matrix<block>, 2> output;
+	//std::array<Matrix<u8>, 2> tags;
+	output[0].resize(numSets, domain);
+	output[1].resize(numSets, domain);
+	//tags[0].resize(numSets, domain);
+	//tags[1].resize(numSets, domain);
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+	auto r = macoro::sync_wait(macoro::when_all_ready(
+		dpf[0].setPoints(points0, prng, sock[0]),
+		dpf[1].setPoints(points1, prng, sock[1])
+	));
+	std::get<0>(r).result();
+	std::get<1>(r).result();
+
+	// Expand the DPF to generate numSets instances of secret shared vectors
+	auto r2 = macoro::sync_wait(macoro::when_all_ready(
+		dpf[0].expand(values0, prng, sock[0],
+			[&](auto setIdx, auto i, auto&& v) {
+				output[0](setIdx, i) = v;
+			}),
+		dpf[1].expand(values1, prng, sock[1],
+			[&](auto setIdx, auto i, auto&& v) {
+				output[1](setIdx, i) = v;
+			})
+	));
+	std::get<0>(r2).result();
+	std::get<1>(r2).result();
+
+	// Verify correctness for each set
+	for (u64 setIdx = 0; setIdx < numSets; ++setIdx)
+	{
+		std::vector<block> expectedValue(domain);
+
+		for (u64 pointIdx = 0; pointIdx < numPoints; ++pointIdx)
+		{
+			auto p = points0(setIdx, pointIdx) ^ points1(setIdx, pointIdx);
+			expectedValue[p] ^= values0(setIdx, pointIdx) ^ values1(setIdx, pointIdx);
+		}
+
+		for (u64 i = 0; i < domain; ++i)
+		{
+			// Check if this domain position should be active for any point in this set
+			//bool isActive = expectedValue[i] != ZeroBlock;
+
+
+			auto actualValue = output[0](setIdx, i) ^ output[1](setIdx, i);
+			//auto actualTag = tags[0](setIdx, i) ^ tags[1](setIdx, i);
+			//auto expectedTag = isActive ? 1 : 0;
+
+			if (actualValue != expectedValue[i])
+			{
+				std::cout << "Value mismatch at set " << setIdx << ", position " << i << std::endl;
+				std::cout << "Expected: " << expectedValue[i] << std::endl;
+				std::cout << "Actual: " << actualValue << std::endl;
+				throw RTE_LOC;
+			}
+
+			//if (actualTag != expectedTag)
+			//{
+			//	std::cout << "Tag mismatch at set " << setIdx << ", position " << i << std::endl;
+			//	std::cout << "Expected: " << expectedTag << std::endl;
+			//	std::cout << "Actual: " << actualTag << std::endl;
+			//	throw RTE_LOC;
+			//}
+		}
+	}
+
+
+
+#else
+	throw UnitTestSkipped("ENABLE_REGULAR_DPF not defined.");
+#endif
+}
+
+// round the index a to the "bitwise" nearest point in set.
+u64 round(u64 a, span<u32> set, u64 bitCount)
+{
+	a &= (1ull << bitCount) - 1;
+	for (u64 b = bitCount - 1; b < bitCount; --b)
+	{
+		auto mask = 1ull << b;
+		auto aa = a & mask;
+
+		// the start of the section half
+		auto mid = std::lower_bound(set.begin(), set.end(), mask, [](auto s, auto mask) -> bool {
+			return !(s & mask);
+			});
+
+		// we want the second half but there is no second half or
+		// we want the first  half but there is no first  half.
+		// if so, then we need to round our index
+		if ((aa && (mid == set.end())) ||
+			(!aa && (mid == set.begin())))
+		{
+			a ^= mask;
+			aa ^= mask;
+		}
+
+		if (aa)
+			set = span<u32>(mid, set.end());
+		else
+			set = span<u32>(set.begin(), mid);
+	}
+	return a;
+}
+
+void SparseDpf_Mtx_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SPARSE_DPF
+
+	PRNG prng(block(32324, 2342));
+	u64 numPoints = 11;
+	u64 domain = 1773;
+	u64 dense = 4;
+	u64 fraction = 16;
+
+	auto index{ std::vector<u64>(numPoints) };
+	auto value{ std::vector<block>(numPoints) };
+	std::array points{ std::vector<u64>(numPoints),std::vector<u64>(numPoints) };
+	std::array values{ std::vector<block>(numPoints), std::vector<block>(numPoints) };
+	oc::SparseDpf dpf[2];
+	Matrix<u32> sparsePoints(numPoints, domain / fraction);
+
+	for (u64 j = 0; j < numPoints; ++j)
+	{
+		std::vector<u32> set(domain);
+		std::iota(set.begin(), set.end(), 0);
+		for (u64 i = 0; i < sparsePoints.cols(); ++i)
+		{
+			auto k = prng.get<u32>() % set.size();
+			std::swap(set[k], set.back());
+			sparsePoints(j, i) = set.back();
+			set.pop_back();
+		}
+	}
+
+	for (u64 i = 0; i < sparsePoints.rows(); ++i)
+	{
+		std::sort(sparsePoints[i].begin(), sparsePoints[i].end());
+		index[i] = prng.get<u64>() % sparsePoints.cols();
+		value[i] = prng.get();
+		//auto alpha = sparsePoints(i, index[i]);
+		//std::cout << "alpha " << alpha << " " << oc::BitVector((u8*)&alpha, log2ceil(domain)) << std::endl;
+		points[0][i] = prng.get();
+		points[1][i] = points[0][i] ^ sparsePoints(i, index[i]);
+		values[0][i] = prng.get();
+		values[1][i] = values[0][i] ^ value[i];
+	}
+
+
+	dpf[0].init(0, numPoints, domain, dense);
+	dpf[1].init(1, numPoints, domain, dense);
+	auto sock = coproto::LocalAsyncSocket::makePair();
+
+	auto baseCount = dpf[0].baseOtCount();
+
+	std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+	std::array<std::vector<block>, 2> recvOts;
+	std::array<BitVector, 2> choices;
+	for (u64 i = 0; i < 2; ++i)
+	{
+		sendOts[i].resize(baseCount);
+		recvOts[i].resize(baseCount);
+		choices[i].resize(baseCount);
+		choices[i].randomize(prng);
+		prng.get(sendOts[i].data(), sendOts[i].size());
+		for (u64 j = 0; j < baseCount; ++j)
+			recvOts[i][j] = sendOts[i][j][choices[i][j]];
+	}
+
+	dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+	dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+
+	std::array<Matrix<block>, 2> out;
+	std::array<Matrix<u8>, 2> tags;
+	out[0].resize(numPoints, sparsePoints.cols());
+	out[1].resize(numPoints, sparsePoints.cols());
+	tags[0].resize(numPoints, sparsePoints.cols());
+	tags[1].resize(numPoints, sparsePoints.cols());
+	auto r = macoro::sync_wait(
+		macoro::when_all_ready(
+			dpf[0].expand(points[0], values[0], [&](auto k, auto i, auto v, auto t) { out[0](k, i) = v; tags[0](k, i) = t; }, prng, sparsePoints, sock[0]),
+			dpf[1].expand(points[1], values[1], [&](auto k, auto i, auto v, auto t) { out[1](k, i) = v; tags[1](k, i) = t; }, prng, sparsePoints, sock[1])
+		));
+
+
+	std::get<0>(r).result();
+	std::get<1>(r).result();
+
+	for (u64 i = 0; i < numPoints; ++i)
+	{
+		for (u64 j = 0; j < sparsePoints.cols(); ++j)
+		{
+			auto active = index[i] == j ? 1 : 0;
+
+			auto tag = tags[0](i, j) ^ tags[1](i, j);
+			if (tag != active)
+				throw RTE_LOC;
+
+			auto act = out[0](i, j) ^ out[1](i, j);
+			auto exp = active ? value[i] : ZeroBlock;
+			if (act != exp)
+				throw RTE_LOC;
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void SparseDpf_Vec_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SPARSE_DPF
+
+	PRNG prng(block(32324, 2342));
+	for (auto dense : { /*0,*/ 4 })
+	{
+
+		for (u64 t = 0; t < 2; ++t)
+		{
+
+			u64 numPoints = 8;
+			u64 domain = 1773;
+			//u64 dense = 0;
+			u64 fraction = 16;
+
+			if (t == 0) {
+				domain = 32;
+				numPoints = 1;
+			}
+
+			auto index{ std::vector<u64>(numPoints) };
+			auto value{ std::vector<block>(numPoints) };
+			std::array points{ std::vector<u64>(numPoints),std::vector<u64>(numPoints) };
+			std::array values{ std::vector<block>(numPoints), std::vector<block>(numPoints) };
+			oc::SparseDpf dpf[2];
+			std::vector<std::vector<u32>> sparsePoints(numPoints);// , domain / fraction);
+
+
+
+			if (t == 0)
+			{
+				sparsePoints[0] = { 0, 4, 5, 9, 12, 18, 26, 30 };
+				if (numPoints == 8)
+				{
+					sparsePoints[1] = { 2, 10, 13, 14, 15, 17, 24, 31 };
+					sparsePoints[2] = { 7, 8, 11, 21, 22, 23, 25, 27 };
+					sparsePoints[3] = { 1, 3, 6, 16, 19, 20, 28, 29 };
+					sparsePoints[4] = { 0, 3, 7, 14, 26, 29 };
+					sparsePoints[5] = { 1, 4, 5, 9, 12, 15, 17, 21, 28, 31 };
+					sparsePoints[6] = { 6, 10, 11, 13, 16, 19, 22, 23, 27, 30 };
+					sparsePoints[7] = { 2, 8, 18, 20, 24, 25 };
+				}
+				std::vector<u32> point = { u32(~0ul), u32(2ul), u32(23ul), u32(~0ul), u32(~0ul), u32(9ul), u32(~0ul), u32(8ul) };
+
+				for (u64 i = 0; i < numPoints; ++i)
+				{
+					point[i] = round(point[i], sparsePoints[i], log2ceil(domain));
+					index[i] = std::lower_bound(sparsePoints[i].begin(), sparsePoints[i].end(), point[i]) -
+						sparsePoints[i].begin();
+					if (index[i] == sparsePoints[i].size())
+						throw RTE_LOC;
+					value[i] = prng.get();
+					points[0][i] = prng.get();
+					points[1][i] = points[0][i] ^ (index[i] == ~0ull ? 32 : sparsePoints[i][index[i]]);
+					values[0][i] = prng.get();
+					values[1][i] = values[0][i] ^ value[i];
+				}
+
+			}
+			else
+			{
+
+				for (u64 j = 0; j < numPoints; ++j)
+				{
+					sparsePoints[j].resize(domain / fraction + prng.get<u8>() % 20);
+					std::vector<u32> set(domain);
+					std::iota(set.begin(), set.end(), 0);
+					for (u64 i = 0; i < sparsePoints[j].size(); ++i)
+					{
+						auto k = prng.get<u32>() % set.size();
+						std::swap(set[k], set.back());
+						sparsePoints[j][i] = set.back();
+						set.pop_back();
+					}
+				}
+
+				for (u64 i = 0; i < numPoints; ++i)
+				{
+					std::sort(sparsePoints[i].begin(), sparsePoints[i].end());
+					index[i] = prng.get<u64>() % sparsePoints[i].size();
+					value[i] = prng.get();
+					//auto alpha = sparsePoints(i, index[i]);
+					//std::cout << "alpha " << alpha << " " << oc::BitVector((u8*)&alpha, log2ceil(domain)) << std::endl;
+					points[0][i] = prng.get();
+					points[1][i] = points[0][i] ^ sparsePoints[i][index[i]];
+					values[0][i] = prng.get();
+					values[1][i] = values[0][i] ^ value[i];
+				}
+
+
+			}
+
+
+
+			dpf[0].init(0, numPoints, domain, dense);
+			dpf[1].init(1, numPoints, domain, dense);
+			auto sock = coproto::LocalAsyncSocket::makePair();
+
+			auto baseCount = dpf[0].baseOtCount();
+
+			std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+			std::array<std::vector<block>, 2> recvOts;
+			std::array<BitVector, 2> choices;
+			for (u64 i = 0; i < 2; ++i)
+			{
+				sendOts[i].resize(baseCount);
+				recvOts[i].resize(baseCount);
+				choices[i].resize(baseCount);
+				choices[i].randomize(prng);
+				prng.get(sendOts[i].data(), sendOts[i].size());
+				for (u64 j = 0; j < baseCount; ++j)
+					recvOts[i][j] = sendOts[i][j][choices[i][j]];
+			}
+
+			dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+			dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+
+			std::array<std::vector<std::vector<block>>, 2> out;
+			std::array<std::vector<std::vector<u8>>, 2> tags;
+			out[0].resize(numPoints);
+			out[1].resize(numPoints);
+			tags[0].resize(numPoints);
+			tags[1].resize(numPoints);
+			for (u64 i = 0; i < numPoints; ++i)
+			{
+				out[0][i].resize(sparsePoints[i].size());
+				out[1][i].resize(sparsePoints[i].size());
+				tags[0][i].resize(sparsePoints[i].size());
+				tags[1][i].resize(sparsePoints[i].size());
+			}
+
+			auto r = macoro::sync_wait(
+				macoro::when_all_ready(
+					dpf[0].expand(points[0], values[0], [&](auto k, auto i, auto v, auto t) { out[0][k][i] = v; tags[0][k][i] = t; }, prng, sparsePoints, sock[0]),
+					dpf[1].expand(points[1], values[1], [&](auto k, auto i, auto v, auto t) { out[1][k][i] = v; tags[1][k][i] = t; }, prng, sparsePoints, sock[1])
+				));
+
+
+			std::get<0>(r).result();
+			std::get<1>(r).result();
+
+			for (u64 i = 0; i < numPoints; ++i)
+			{
+				for (u64 j = 0; j < sparsePoints[i].size(); ++j)
+				{
+					auto active = index[i] == j ? 1 : 0;
+
+					auto tag = tags[0][i][j] ^ tags[1][i][j];
+					auto act = out[0][i][j] ^ out[1][i][j];
+					auto exp = active ? value[i] : ZeroBlock;
+					if (act != exp)
+					{
+						std::cout << "idx " << index[i] << std::endl;
+						std::cout << "loc " << sparsePoints[i][index[i]] << std::endl;
+						std::cout << "act " << act << " " << int(tag) << std::endl;
+						std::cout << "exp " << exp << " " << int(active) << std::endl;
+						throw RTE_LOC;
+					}
+
+					if (tag != active)
+						throw RTE_LOC;
+				}
+			}
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void SparseDpf_CorrectionEncoding_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SPARSE_DPF
+	// Exercise the actual wire encoder with both possible local low bits.
+	// The peer retains the outgoing bytes, rather than just checking the XOR.
+	for (u64 party = 0; party < 2; ++party)
+	{
+		SparseDpf dpf;
+		dpf.mPartyIdx = party;
+		constexpr u64 count = 32;
+		std::vector<block> sigma(count), peerSigma(count), observedSigma(count);
+		std::vector<std::array<u8, 2>> tau(count), peerTau(count), observedTau(count);
+		std::array<std::array<u64, 8>, 2> laws{};
+		for (u64 i = 0; i < count; ++i)
+		{
+			const u64 a = i / 16, z0 = (i / 4) % 4, z1 = i % 4;
+			peerSigma[i] = block(0x12345678, i ^ party);
+			sigma[i] = block(0, a ? z0 : z1) ^ peerSigma[i];
+			peerTau[i] = { static_cast<u8>((i + party) & 1), static_cast<u8>((i >> 1) & 1) };
+			tau[i] = { static_cast<u8>((z0 & 1) ^ a ^ 1 ^ peerTau[i][0]),
+				static_cast<u8>((z1 & 1) ^ a ^ peerTau[i][1]) };
+		}
+		const auto original = sigma;
+		auto sockets = coproto::LocalAsyncSocket::makePair();
+		auto peer = [&]() -> macoro::task<> {
+			co_await sockets[1].recv(observedSigma);
+			co_await sockets[1].recv(observedTau);
+			for (auto& value : peerSigma) value &= ~OneBlock;
+			co_await sockets[1].send(coproto::copy(peerSigma));
+			co_await sockets[1].send(coproto::copy(peerTau));
+		};
+		auto results = macoro::sync_wait(macoro::when_all_ready(
+			dpf.reveal(sigma, tau, sockets[0]), peer()));
+		std::get<0>(results).result();
+		std::get<1>(results).result();
+		for (u64 i = 0; i < count; ++i)
+		{
+			if (observedSigma[i] != (original[i] & ~OneBlock) || dpf.lsb(sigma[i]))
+				throw UnitTestFail("Sparse DPF sent the selected correction's low bit");
+			const u64 a = i / 16, z0 = (i / 4) % 4, z1 = i % 4;
+			if (sigma[i] != block(0, (a ? z0 : z1) & ~1ull) ||
+				tau[i][0] != ((z0 & 1) ^ a ^ 1) || tau[i][1] != ((z1 & 1) ^ a))
+				throw UnitTestFail("Sparse DPF packed correction mismatch");
+			++laws[a][(sigma[i].get<u64>(0) << 1) | (tau[i][0] << 1) | tau[i][1]];
+		}
+		if (laws[0] != laws[1])
+			throw UnitTestFail("Sparse DPF packed opening depends on the secret digit");
+	}
+
+	// The full corrected seed must contain the corrected logical tag.
+	for (u64 seed = 0; seed < 16; ++seed)
+		for (u8 parent = 0; parent < 2; ++parent)
+			for (u8 tau = 0; tau < 2; ++tau)
+			{
+				const auto corrected = SparseDpf::correctSeed(block(0, seed), parent, block(0, 6), tau);
+				if (corrected != block(0, seed ^ (parent * (6 | tau))))
+					throw UnitTestFail("Sparse DPF did not repack its corrected tag");
+			}
+#else
+	throw UnitTestSkipped("ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void SparseDpf_InactiveLevel_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SPARSE_DPF
+	PRNG prng(block(0x737061727365ull, 0x6163746976697479ull));
+	const auto provision = [&](auto& dpf) {
+		const auto count = dpf[0].baseOtCount();
+		if (dpf[1].baseOtCount() != count)
+			throw UnitTestFail("Sparse DPF OT counts disagree");
+		std::array<std::vector<std::array<block, 2>>, 2> send;
+		std::array<std::vector<block>, 2> recv;
+		std::array<BitVector, 2> choices;
+		for (u64 p = 0; p < 2; ++p)
+		{
+			send[p].resize(count);
+			recv[p].resize(count);
+			choices[p].resize(count);
+			choices[p].randomize(prng);
+			prng.get(send[p].data(), count);
+			for (u64 j = 0; j < count; ++j)
+				recv[p][j] = send[p][j][choices[p][j]];
+		}
+		dpf[0].setBaseOts(send[0], recv[1], choices[1]);
+		dpf[1].setBaseOts(send[1], recv[0], choices[0]);
+	};
+
+	// Test the actual 256-bit MPC mask with all activity-share combinations,
+	// including a partial packed byte. Public occupancy is always true here.
+	{
+		constexpr u64 n = 13;
+		std::array<SparseDpf, 2> dpf;
+		std::array<std::vector<SparseDpf::Tree>, 2> trees;
+		std::array<BitVector, 2> inactive{ BitVector(n), BitVector(n) };
+		std::array<Matrix<block>, 2> masks{ Matrix<block>(n, 2), Matrix<block>(n, 2) };
+		std::array<Matrix<block>, 2> original{ Matrix<block>(n, 2), Matrix<block>(n, 2) };
+		std::array<Matrix<block>, 2> random{ Matrix<block>(n, 2), Matrix<block>(n, 2) };
+		std::array<PRNG, 2> coins;
+		for (u64 p = 0; p < 2; ++p)
+		{
+			dpf[p].init(p, n, 2, 0);
+			trees[p].resize(n);
+			const auto seed = prng.get<block>();
+			coins[p].SetSeed(seed);
+			PRNG expected(seed);
+			expected.get(random[p].data(), random[p].size());
+			for (u64 r = 0; r < n; ++r)
+			{
+				trees[p][r].mLevels.resize(2);
+				trees[p][r][1].mHasSplit = true;
+				trees[p][r][1].mActivity = (r >> p) & 1;
+				for (u64 j = 0; j < 2; ++j)
+					trees[p][r][1].mZ[j] = original[p](r, j) = prng.get<block>();
+			}
+		}
+		provision(dpf);
+		auto sockets = coproto::LocalAsyncSocket::makePair();
+		auto results = macoro::sync_wait(macoro::when_all_ready(
+			dpf[0].maskInactiveLevel(trees[0], 1, inactive[0], masks[0], coins[0], sockets[0]),
+			dpf[1].maskInactiveLevel(trees[1], 1, inactive[1], masks[1], coins[1], sockets[1])));
+		std::get<0>(results).result();
+		std::get<1>(results).result();
+		for (u64 r = 0; r < n; ++r)
+			for (u64 j = 0; j < 2; ++j)
+			{
+				const bool active = ((r ^ (r >> 1)) & 1) != 0;
+				const auto delta = active ? ZeroBlock : random[0](r, j) ^ random[1](r, j);
+				if ((trees[0][r][1].mZ[j] ^ trees[1][r][1].mZ[j]) !=
+					(original[0](r, j) ^ original[1](r, j) ^ delta))
+					throw UnitTestFail("Sparse DPF secret-activity mask is incorrect");
+			}
+		if (dpf[0].mMultiplier.mOtIdx != n || dpf[1].mMultiplier.mOtIdx != n)
+			throw UnitTestFail("Sparse DPF mask did not use one OT per direction per row");
+	}
+
+	// Check activity accumulation in the eight-node kernel and its scalar tail.
+	for (u64 count : { 1ull, 8ull, 13ull, 1023ull, 1024ull, 1025ull })
+	{
+		const block hashSeed(123, 987);
+		const AES outer(hashSeed);
+		details::DpfTreeHash hash(hashSeed);
+		hash.mCounter = 1019; // A chunk ends inside the first SIMD packet.
+		std::vector<u32> support(2 * count);
+		std::iota(support.begin(), support.end(), 0);
+		std::array<u64, 3> capacities{ 2 * count, count, 0 };
+		SparseDpf dpf;
+		SparseDpf::Tree tree;
+		tree.resize(capacities, support.data());
+		tree[2].mSigma = ZeroBlock;
+		tree[2].mTau = { 1, 0 };
+		u8 expected = 0;
+		std::vector<block> expectedSeeds(2 * count);
+		for (u64 i = 0; i < count; ++i)
+		{
+			SparseDpf::Partition part{ support.data() + 2 * i,
+				support.data() + 2 * i + 1, support.data() + 2 * i + 2 };
+			const auto seed = prng.get<block>();
+			const u8 tag = i & 1;
+			expected ^= dpf.lsb(seed) ^ tag;
+			const auto corrected = seed ^ block(0, tag);
+			const AES aes(outer.ecbEncBlock(block((1019 + i) / 1024, 0x445046545245454bull)));
+			expectedSeeds[2 * i] = aes.hashBlock(corrected);
+			expectedSeeds[2 * i + 1] = aes.hashBlock(corrected ^ OneBlock);
+			tree[1].push_back(0, 2, part, seed, tag);
+		}
+		dpf.expandSparseLevel(tree, 1, hash);
+		if (hash.mCounter != 1019 + count) throw RTE_LOC;
+		if (!tree[1].mHasSplit || tree[1].mActivity != expected)
+			throw UnitTestFail("Sparse DPF accumulated uncorrected or duplicate activity tags");
+		for (u64 i = 0; i < 2 * count; ++i)
+			if (tree[0][i].mSeed != expectedSeeds[i])
+				throw UnitTestFail("Sparse DPF expanded a seed with an uncorrected low bit");
+	}
+
+	// The original witness, then uneven subtrees below a dense prefix. Run
+	// both value-producing and cached-seed modes, with every supported alpha.
+	for (u64 profile = 0; profile < 12; ++profile)
+		for (bool cached : { false, true })
+		{
+			const u64 dense = std::array<u64, 4>{ 0, 1, 2, 6 }[profile % 4];
+			const std::vector<u32> support = profile < 4 ? std::vector<u32>{ 1 }
+				: profile < 8 ? std::vector<u32>{ 0, 4 } : dense == 0
+				? std::vector<u32>{ 0, 1, 4 }
+				: std::vector<u32>{ 0, 1, 4, 16, 32, 33, 36, 48 };
+			const u64 n = support.size();
+			const u64 domain = dense == 0 ? 8 : 64;
+			std::vector<std::vector<u32>> sets(n, support);
+			std::array<SparseDpf, 2> dpf;
+			std::array<std::vector<u64>, 2> points{ std::vector<u64>(n), std::vector<u64>(n) };
+			std::array<std::vector<block>, 2> values;
+			std::array<Matrix<block>, 2> output{ Matrix<block>(n, n), Matrix<block>(n, n) };
+			std::array<Matrix<u8>, 2> tags{ Matrix<u8>(n, n), Matrix<u8>(n, n) };
+			std::vector<block> beta(n);
+			std::array<PRNG, 2> coins;
+			for (u64 p = 0; p < 2; ++p)
+			{
+				dpf[p].init(p, n, domain, dense);
+				coins[p].SetSeed(prng.get<block>());
+				if (!cached) values[p].resize(n);
+			}
+			const auto sparseDepth = log2ceil(domain) - dense;
+			if (dpf[0].baseOtCount() != n * (dense + 2 * sparseDepth))
+				throw UnitTestFail("Sparse DPF did not budget mask OTs");
+			for (u64 r = 0; r < n; ++r)
+			{
+				points[0][r] = prng.get<u64>() % domain;
+				points[1][r] = points[0][r] ^ support[r];
+				beta[r] = prng.get<block>();
+				if (!cached)
+				{
+					values[0][r] = prng.get<block>();
+					values[1][r] = values[0][r] ^ beta[r];
+				}
+			}
+			provision(dpf);
+			auto sockets = coproto::LocalAsyncSocket::makePair();
+			auto results = macoro::sync_wait(macoro::when_all_ready(
+				dpf[0].expand(points[0], values[0], [&](auto r, auto x, auto y, auto t) {
+					output[0](r, x) = y; tags[0](r, x) = t;
+				}, coins[0], sets, sockets[0]),
+				dpf[1].expand(points[1], values[1], [&](auto r, auto x, auto y, auto t) {
+					output[1](r, x) = y; tags[1](r, x) = t;
+				}, coins[1], sets, sockets[1])));
+			std::get<0>(results).result();
+			std::get<1>(results).result();
+			for (u64 r = 0; r < n; ++r)
+				for (u64 x = 0; x < n; ++x)
+				{
+					if (cached && ((output[0](r, x) | output[1](r, x)) & OneBlock) != ZeroBlock)
+						throw UnitTestFail("Sparse DPF exported a tag as cached seed entropy");
+					if ((tags[0](r, x) ^ tags[1](r, x)) != (r == x))
+						throw UnitTestFail("Sparse DPF tag invariant failed after masking");
+					if ((!cached || r != x) && (output[0](r, x) ^ output[1](r, x)) !=
+						(r == x ? beta[r] : ZeroBlock))
+						throw UnitTestFail("Sparse DPF output invariant failed after masking");
+				}
+			if (profile >= 8 && dense == 0 && dpf[0].mMultiplier.mOtIdx != 4 * n)
+				throw UnitTestFail("Sparse DPF witness did not mask both public split levels");
+		}
+#else
+	throw UnitTestSkipped("ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+void SparseDpf_Punct_Test(const oc::CLP& cmd)
+{
+
+#ifdef ENABLE_SPARSE_DPF
+
+	PRNG prng(block(32324, 2342));
+	for (auto dense : { /*0,*/ 4 })
+	{
+
+		for (u64 t = 0; t < 2; ++t)
+		{
+
+			u64 numPoints = 8;
+			u64 domain = 1773;
+			u64 fraction = 16;
+
+			if (t == 0) {
+				domain = 32;
+				numPoints = 1;
+			}
+
+			auto index{ std::vector<u64>(numPoints) };
+			std::array points{ std::vector<u64>(numPoints),std::vector<u64>(numPoints) };
+			oc::SparseDpf dpf[2];
+			std::vector<std::vector<u32>> sparsePoints(numPoints);// , domain / fraction);
+
+
+			for (u64 j = 0; j < numPoints; ++j)
+			{
+				sparsePoints[j].resize(domain / fraction + prng.get<u8>() % 20);
+				std::vector<u32> set(domain);
+				std::iota(set.begin(), set.end(), 0);
+				for (u64 i = 0; i < sparsePoints[j].size(); ++i)
+				{
+					auto k = prng.get<u32>() % set.size();
+					std::swap(set[k], set.back());
+					sparsePoints[j][i] = set.back();
+					set.pop_back();
+				}
+			}
+
+			for (u64 i = 0; i < numPoints; ++i)
+			{
+				std::sort(sparsePoints[i].begin(), sparsePoints[i].end());
+				index[i] = prng.get<u64>() % sparsePoints[i].size();
+				//auto alpha = sparsePoints(i, index[i]);
+				//std::cout << "alpha " << alpha << " " << oc::BitVector((u8*)&alpha, log2ceil(domain)) << std::endl;
+				points[0][i] = prng.get();
+				points[1][i] = points[0][i] ^ sparsePoints[i][index[i]];
+			}
+
+
+
+			dpf[0].init(0, numPoints, domain, dense);
+			dpf[1].init(1, numPoints, domain, dense);
+			auto sock = coproto::LocalAsyncSocket::makePair();
+
+			auto baseCount = dpf[0].baseOtCount();
+
+			std::array<std::vector<std::array<block, 2>>, 2> sendOts;
+			std::array<std::vector<block>, 2> recvOts;
+			std::array<BitVector, 2> choices;
+			for (u64 i = 0; i < 2; ++i)
+			{
+				sendOts[i].resize(baseCount);
+				recvOts[i].resize(baseCount);
+				choices[i].resize(baseCount);
+				choices[i].randomize(prng);
+				prng.get(sendOts[i].data(), sendOts[i].size());
+				for (u64 j = 0; j < baseCount; ++j)
+					recvOts[i][j] = sendOts[i][j][choices[i][j]];
+			}
+
+			dpf[0].setBaseOts(sendOts[0], recvOts[1], choices[1]);
+			dpf[1].setBaseOts(sendOts[1], recvOts[0], choices[0]);
+
+
+			std::array<std::vector<std::vector<block>>, 2> out;
+			std::array<std::vector<std::vector<u8>>, 2> tags;
+			out[0].resize(numPoints);
+			out[1].resize(numPoints);
+			tags[0].resize(numPoints);
+			tags[1].resize(numPoints);
+			for (u64 i = 0; i < numPoints; ++i)
+			{
+				out[0][i].resize(sparsePoints[i].size());
+				out[1][i].resize(sparsePoints[i].size());
+				tags[0][i].resize(sparsePoints[i].size());
+				tags[1][i].resize(sparsePoints[i].size());
+			}
+
+			auto r = macoro::sync_wait(
+				macoro::when_all_ready(
+					dpf[0].expand(points[0], {}, [&](auto k, auto i, auto v, auto t) { out[0][k][i] = v; tags[0][k][i] = t; }, prng, sparsePoints, sock[0]),
+					dpf[1].expand(points[1], {}, [&](auto k, auto i, auto v, auto t) { out[1][k][i] = v; tags[1][k][i] = t; }, prng, sparsePoints, sock[1])
+				));
+
+
+			std::get<0>(r).result();
+			std::get<1>(r).result();
+
+			for (u64 i = 0; i < numPoints; ++i)
+			{
+				for (u64 j = 0; j < sparsePoints[i].size(); ++j)
+				{
+					auto active = index[i] == j ? 1 : 0;
+
+					auto tag = tags[0][i][j] ^ tags[1][i][j];
+					auto act = out[0][i][j] ^ out[1][i][j];
+
+					if (active)
+					{
+						if (act == ZeroBlock)
+						{
+							std::cout << "idx " << index[i] << std::endl;
+							std::cout << "loc " << sparsePoints[i][index[i]] << std::endl;
+							std::cout << "act " << act << " " << int(tag) << std::endl;
+							throw RTE_LOC;
+						}
+					}
+					else
+					{
+
+						if (act != ZeroBlock)
+						{
+							std::cout << "idx " << index[i] << std::endl;
+							std::cout << "loc " << sparsePoints[i][index[i]] << std::endl;
+							std::cout << "act " << act << " " << int(tag) << std::endl;
+							throw RTE_LOC;
+						}
+					}
+
+					if (tag != active)
+						throw RTE_LOC;
+				}
+			}
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_SPARSE_DPF not defined.");
+#endif
+}
+
+
+struct TrackingTernaryCoeffCtx : CoeffCtxGF2
+{
+	inline static u64 mSerializeCalls = 0;
+	inline static u64 mDeserializeCalls = 0;
+
+	template<typename SrcIter, typename DstIter>
+	void serialize(SrcIter begin, SrcIter end, DstIter dstBegin) const
+	{
+		++mSerializeCalls;
+		CoeffCtxGF2::serialize(begin, end, dstBegin);
+	}
+
+	template<typename SrcIter, typename DstIter>
+	void deserialize(SrcIter begin, SrcIter end, DstIter dstBegin) const
+	{
+		++mDeserializeCalls;
+		CoeffCtxGF2::deserialize(begin, end, dstBegin);
+	}
+};
+
+template<typename F, typename Ctx>
+void TernaryDpf_Proto_Test_(const oc::CLP& cmd)
+{
+#ifdef ENABLE_TERNARY_DPF
+
+	PRNG prng(block(231234, 321312));
+	u64 depth = cmd.getOr("depth", 3);
+	u64 domain = ipow(3, depth) - 3;
+	u64 numPoints = cmd.getOr("numPoints", 17);
+	std::vector<F3x32> points0(numPoints);
+	std::vector<F3x32> points1(numPoints);
+	std::vector<F3x32> points(numPoints);
+	std::vector<F> values0(numPoints);
+	std::vector<F> values1(numPoints);
+	Ctx ctx;
+	for (u64 i = 0; i < numPoints; ++i)
+	{
+		points[i] = F3x32(prng.get<u64>() % domain);
+		points1[i] = F3x32(prng.get<u64>() % domain);
+		points0[i] = points[i] - points1[i];
+		//std::cout << points[i] << " = " << points0[i] <<" + "<< points1[i] << std::endl;
+		ctx.fromBlock(values0[i], prng.get());
+		ctx.fromBlock(values1[i], prng.get());
+		//ctx.minus(points0[i], points[i], points1[i];)
+	}
+
+	std::array<oc::TernaryDpf<F, Ctx>, 2> dpf;
+	dpf[0].init(0, domain, numPoints);
+	dpf[1].init(1, domain, numPoints);
+
+	auto baseCount = dpf[0].baseOtCount();
+
+	std::array<std::vector<block>, 2> baseRecv;
+	std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+	std::array<BitVector, 2> baseChoice;
+	baseRecv[0].resize(baseCount);
+	baseRecv[1].resize(baseCount);
+	baseSend[0].resize(baseCount);
+	baseSend[1].resize(baseCount);
+	baseChoice[0].resize(baseCount);
+	baseChoice[1].resize(baseCount);
+	baseChoice[0].randomize(prng);
+	baseChoice[1].randomize(prng);
+	for (u64 i = 0; i < baseCount; ++i)
+	{
+		baseSend[0][i] = prng.get();
+		baseSend[1][i] = prng.get();
+		baseRecv[0][i] = baseSend[1][i][baseChoice[0][i]];
+		baseRecv[1][i] = baseSend[0][i][baseChoice[1][i]];
+	}
+	dpf[0].setBaseOts(baseSend[0], baseRecv[0], baseChoice[0]);
+	dpf[1].setBaseOts(baseSend[1], baseRecv[1], baseChoice[1]);
+
+	std::array<Matrix<F>, 2> output;
+	std::array<Matrix<u8>, 2> tags;
+	output[0].resize(numPoints, domain);
+	output[1].resize(numPoints, domain);
+	tags[0].resize(numPoints, domain);
+	tags[1].resize(numPoints, domain);
+
+	auto sock = coproto::LocalAsyncSocket::makePair();
+	macoro::sync_wait(macoro::when_all_ready(
+		dpf[0].expand(points0, values0, [&](auto k, auto i, auto v, auto t) { output[0](k, i) = v; tags[0](k, i) = t; }, prng, sock[0]),
+		dpf[1].expand(points1, values1, [&](auto k, auto i, auto v, auto t) { output[1](k, i) = v; tags[1](k, i) = t; }, prng, sock[1])
+	));
+	for (auto& instance : dpf)
+	{
+		if (instance.hasBaseOts() || instance.mBaseSendOts.size() ||
+			instance.mBaseRecvOts.size() || instance.mBaseChoice.size())
+			throw UnitTestFail("Ternary DPF retained consumed base OTs");
+	}
+	bool rejectedReuse = false;
+	try
+	{
+		coproto::Socket emptySock;
+		macoro::sync_wait(dpf[0].expand(points0, values0,
+			[](auto, auto, auto, auto) {}, prng, emptySock));
+	}
+	catch (const std::exception&)
+	{
+		rejectedReuse = true;
+	}
+	if (!rejectedReuse)
+		throw UnitTestFail("Ternary DPF reused consumed base OTs");
+
+
+	for (u64 i = 0; i < domain; ++i)
+	{
+		F3x32 I(i);
+		for (u64 k = 0; k < numPoints; ++k)
+		{
+			F act;
+			ctx.plus(act, output[0][k][i], output[1][k][i]);
+			auto t = I == points[k] ? 1 : 0;
+			auto tAct = tags[0][k][i] ^ tags[1][k][i];
+			F exp;
+			if (t)
+				ctx.plus(exp, values0[k], values1[k]);
+			else
+				ctx.zero(&exp, &exp + 1);
+
+			if (exp != act)
+			{
+				std::cout << "i " << i << "=" << F3x32(i) << " " << t << std::endl;
+				std::cout << "exp " << exp << std::endl;
+				std::cout << "act " << act << std::endl;
+				throw RTE_LOC;
+			}
+			if (t != tAct)
+				throw RTE_LOC;
+		}
+	}
+#else
+	throw UnitTestSkipped("ENABLE_TERNARY_DPF not defined.");
+#endif
+}
+void TritDpf_Proto_Test(const oc::CLP& cmd)
+{
+	TernaryDpf_Proto_Test_<block, CoeffCtxGF2>(cmd);
+	TernaryDpf_Proto_Test_<u8, CoeffCtxGF2>(cmd);
+	TrackingTernaryCoeffCtx::mSerializeCalls = 0;
+	TrackingTernaryCoeffCtx::mDeserializeCalls = 0;
+	TernaryDpf_Proto_Test_<u8, TrackingTernaryCoeffCtx>(cmd);
+	if (TrackingTernaryCoeffCtx::mSerializeCalls != 2 ||
+		TrackingTernaryCoeffCtx::mDeserializeCalls != 2)
+		throw UnitTestFail(
+			"Ternary DPF bypassed its coefficient context wire encoding");
+}
+
+void Dpf_Audit_Test(const oc::CLP&)
+{
+	auto expectRejected = [](auto&& fn, const char* message) {
+		bool rejected = false;
+		try { fn(); }
+		catch (const std::exception&) { rejected = true; }
+		if (!rejected)
+			throw UnitTestFail(message);
+	};
+
+#if defined(ENABLE_REGULAR_DPF) || defined(ENABLE_SPARSE_DPF)
+	static_assert(!std::is_copy_constructible_v<DpfMult>);
+	static_assert(!std::is_copy_assignable_v<DpfMult>);
+	static_assert(std::is_move_constructible_v<DpfMult>);
+	static_assert(std::is_move_assignable_v<DpfMult>);
+	static_assert(!std::is_copy_constructible_v<DpfMult::MultSession>);
+	static_assert(!std::is_copy_assignable_v<DpfMult::MultSession>);
+	static_assert(std::is_move_constructible_v<DpfMult::MultSession>);
+	static_assert(std::is_move_assignable_v<DpfMult::MultSession>);
+
+	{
+		DpfMult mult;
+		mult.init(1, 1);
+		std::vector<std::array<block, 2>> sendOts(1);
+		std::vector<block> recvOts(1);
+		BitVector choices(1);
+		mult.setBaseOts(sendOts, recvOts, choices);
+
+		auto moved = std::move(mult);
+		if (!moved.hasBaseOts() || mult.hasBaseOts() || mult.mPartyIdx ||
+			mult.mTotalMults || mult.mOtIdx || mult.mChoiceBits.size() ||
+			mult.mRecvOts.size() || mult.mSendOts.size())
+			throw UnitTestFail("DPF multiplier move retained source correlation state");
+
+		DpfMult::MultSession session;
+		session.mPartyIdx = 1;
+		session.mExpandIdx = 7;
+		session.mRecvOts = moved.mRecvOts;
+		session.mSendOts = moved.mSendOts;
+		session.mX.resize(1);
+		auto movedSession = std::move(session);
+		if (movedSession.mExpandIdx != 7 || movedSession.mRecvOts.size() != 1 ||
+			movedSession.mSendOts.size() != 1 || movedSession.mX.size() != 1 ||
+			session.mPartyIdx || session.mExpandIdx || session.mRecvOts.size() ||
+			session.mSendOts.size() || session.mX.size())
+			throw UnitTestFail("DPF multiplication session move retained source state");
+	}
+
+	{
+		DpfMult mult;
+		mult.init(0, 1);
+		std::vector<std::array<block, 2>> sendOts(1);
+		std::vector<block> recvOts(1);
+		BitVector choices(1), x(1);
+		mult.setBaseOts(sendOts, recvOts, choices);
+		std::vector<block> y(1), xy(1);
+		auto sockets = coproto::LocalAsyncSocket::makePair();
+		macoro::sync_wait(sockets[1].close());
+
+		bool failed = false;
+		try
+		{
+			macoro::sync_wait(mult.multiply(x, y, xy, sockets[0]));
+		}
+		catch (const std::exception&)
+		{
+			failed = true;
+		}
+		if (!failed || mult.mOtIdx != 1 || mult.hasBaseOts())
+			throw UnitTestFail("DPF multiplication reused OTs after transport failure");
+	}
+
+	{
+		constexpr u64 n = 1;
+		DpfMult mult;
+		mult.init(1, n);
+		std::vector<std::array<block, 2>> sendOts(n);
+		std::vector<block> recvOts(n);
+		BitVector choices(n);
+		mult.setBaseOts(sendOts, recvOts, choices);
+
+		BitVector x(n), y(n), xy(n);
+		auto sockets = coproto::LocalAsyncSocket::makePair();
+		auto injectPadding = [&]() -> macoro::task<> {
+			AlignedUnVector<u8> theta(1), phi(1);
+			co_await sockets[1].recv(theta);
+			co_await sockets[1].recv(phi);
+			theta[0] |= 0xfe;
+			phi[0] |= 0xfe;
+			co_await sockets[1].send(std::move(theta));
+			co_await sockets[1].send(std::move(phi));
+		};
+
+		macoro::sync_wait(macoro::when_all_ready(
+			mult.multiplyBits(x, y, xy, sockets[0]),
+			injectPadding()));
+		if (xy.getSpan<const u8>()[0] & 0xfe)
+			throw UnitTestFail(
+				"DPF bit multiplication retained peer-controlled padding");
+	}
+
+	{
+		Matrix<u8> unpacked(2, 3);
+		std::fill(unpacked.begin(), unpacked.end(), 0xff);
+		std::vector<u8> packed{ 1, 2, 3, 4 };
+		DpfMult::unpackBits(unpacked, packed, 16);
+		if (unpacked(0, 0) != 1 || unpacked(0, 1) != 2 ||
+			unpacked(1, 0) != 3 || unpacked(1, 1) != 4 ||
+			unpacked(0, 2) != 0xff || unpacked(1, 2) != 0xff)
+			throw UnitTestFail("DPF byte unpacking used the physical row stride");
+
+		Matrix<u8> source(2, 3);
+		source(0, 0) = 5;
+		source(0, 1) = 6;
+		source(0, 2) = 0xee;
+		source(1, 0) = 7;
+		source(1, 1) = 8;
+		source(1, 2) = 0xee;
+		packed.assign(4, 0xff);
+		DpfMult::packBits(packed, source, 16);
+		if (packed != std::vector<u8>{ 5, 6, 7, 8 })
+			throw UnitTestFail("DPF byte packing used the physical row stride");
+
+		Matrix<u8> partialSource(1, 1);
+		partialSource(0, 0) = 0x15;
+		packed.assign(1, 0xff);
+		DpfMult::packBits(packed, partialSource, 5);
+		if (packed[0] != 0x15)
+			throw UnitTestFail("DPF bit packing retained stale padding bits");
+		Matrix<u8> partialDest(1, 1);
+		partialDest(0, 0) = 0xff;
+		DpfMult::unpackBits(partialDest, packed, 5);
+		if (partialDest(0, 0) != 0x15)
+			throw UnitTestFail("DPF bit unpacking retained stale padding bits");
+
+		Matrix<u8> narrow(1, 1);
+		std::vector<u8> twoBytes(2);
+		expectRejected([&] {
+			DpfMult::packBits(twoBytes, narrow, 9);
+		}, "DPF bit packing accepted an undersized row");
+
+		DpfMult multiplier;
+		coproto::Socket socket;
+		std::vector<u8> noChoices;
+		std::vector<block> noInput, noOutput;
+		macoro::sync_wait(multiplier.multiply<block, CoeffCtxGF2>(
+			noChoices, noInput, noOutput, socket, CoeffCtxGF2{}));
+
+		std::vector<u8> oneChoice(1);
+		std::vector<block> oneInput(1);
+		expectRejected([&] {
+			macoro::sync_wait(multiplier.multiply<block, CoeffCtxGF2>(
+				oneChoice, oneInput, noOutput, socket, CoeffCtxGF2{}));
+		}, "DPF multiplication accepted an undersized output");
+
+		multiplier.mTotalMults = std::numeric_limits<u64>::max();
+		multiplier.mOtIdx = multiplier.mTotalMults - 1;
+		expectRejected([&] {
+			macoro::sync_wait(multiplier.setupMultiply(2, oneChoice, socket));
+		}, "DPF multiplication OT bounds wrapped");
+	}
+#endif
+
+#ifdef ENABLE_REGULAR_DPF
+	static_assert(!std::is_copy_constructible_v<RegularDpf<block>>);
+	static_assert(std::is_move_constructible_v<RegularDpf<block>>);
+	static_assert(!std::is_copy_constructible_v<SumDmpf<block>>);
+	static_assert(std::is_move_constructible_v<SumDmpf<block>>);
+	{
+		RegularDpf<block> regular;
+		regular.init(1, 8, 1);
+		auto movedRegular = std::move(regular);
+		if (movedRegular.mDomain != 8 || regular.mPartyIdx || regular.mDomain ||
+			regular.mDepth || regular.mNumPoints || regular.hasBaseOts())
+			throw UnitTestFail("Regular DPF move retained source state");
+
+		SumDmpf<block> sum;
+		sum.init(1, 8, 1, 1);
+		sum.mPoints.push_back(3);
+		auto movedSum = std::move(sum);
+		if (movedSum.mPoints.size() != 1 || sum.mTimer || sum.mPartyIdx ||
+			sum.mDomain || sum.mNumSets || sum.mNumPointsPerSet ||
+			sum.mPoints.size() || sum.hasBaseOts())
+			throw UnitTestFail("Sum DMPF move retained source state");
+	}
+
+	{
+		PRNG prng(block(0x4155442d303238ull, 0x4155442d303239ull));
+		constexpr u64 domain = 8;
+		std::vector<u64> points{ 1, 5 };
+		std::vector<block> values{ prng.get(), prng.get() };
+		std::array<RegularDpfKey, 2> keys;
+
+		RegularDpf<block>::keyGen(domain, points, values, prng, keys);
+		values = { prng.get(), prng.get() };
+		RegularDpf<block>::keyGen(domain, points, values, prng, keys);
+		if (keys[0].mLeafVals.size() != points.size() * sizeof(block) ||
+			keys[1].mLeafVals.size() != points.size() * sizeof(block))
+			throw UnitTestFail("Regular DPF appended reused leaf programming");
+
+		std::vector<u8> malformedKey(keys[0].sizeBytes());
+		keys[0].toBytes(malformedKey);
+		auto correctionBitOffset = sizeof(block) *
+			(2 + keys[0].mCorrectionWords.size());
+		malformedKey[correctionBitOffset] = 2;
+		auto unchangedKey = keys[0];
+		expectRejected([&] {
+			keys[0].fromBytes(malformedKey);
+		}, "Regular DPF accepted a noncanonical correction bit");
+		if (keys[0] != unchangedKey)
+			throw UnitTestFail("failed Regular DPF decoding changed the key");
+
+		auto oversizedLeaf = keys[0];
+		oversizedLeaf.mLeafVals.push_back(0);
+		expectRejected([&] {
+			RegularDpf<block>::expand(0, domain, oversizedLeaf,
+				[](auto, auto, auto, auto) {});
+		}, "Regular DPF accepted an oversized leaf buffer");
+
+		auto shortWords = keys[0];
+		shortWords.mCorrectionWords.resize(log2ceil(domain) - 1, points.size());
+		expectRejected([&] {
+			RegularDpf<block>::expand(0, domain, shortWords,
+				[](auto, auto, auto, auto) {});
+		}, "Regular DPF accepted inconsistent correction dimensions");
+
+		std::array<RegularDpfKey, 2> puncturedKeys;
+		std::vector<block> noValues;
+		RegularDpf<block>::keyGen(domain, points, noValues, prng, puncturedKeys);
+		if (puncturedKeys[0].mCorrectionBits.cols() != points.size() ||
+			puncturedKeys[0].mLeafVals.size())
+			throw UnitTestFail("Regular DPF ignored punctured-key points");
+
+		std::vector<u64> invalidPoint{ domain };
+		std::vector<block> invalidValue{ prng.get() };
+		expectRejected([&] {
+			RegularDpf<block>::keyGen(domain, invalidPoint, invalidValue, prng, keys);
+		}, "Regular DPF accepted a point outside its domain");
+
+		RegularDpf<block> oversizedDomain;
+		expectRejected([&] {
+			oversizedDomain.init(0, u64{ 1 } << 63, 8);
+		}, "Regular DPF accepted wrapping working-matrix dimensions");
+
+		SumDmpf<block> sum;
+		sum.init(0, domain, 2, 1);
+		auto count = sum.baseOtCount().mRecvCount;
+		std::vector<std::array<block, 2>> sendOts(count);
+		std::vector<block> recvOts(count);
+		BitVector choices(count);
+		sum.setBaseOts(sendOts, recvOts, choices);
+		sum.mPoints = points;
+		sum.clear();
+		if (sum.hasBaseOts() || sum.mPartyIdx || sum.mDomain || sum.mNumSets ||
+			sum.mNumPointsPerSet || sum.mPoints.size() ||
+			sum.mDpf.mMultiplier.mSendOts.size())
+			throw UnitTestFail("Sum DMPF clear retained protocol state");
+	}
+#endif
+
+#ifdef ENABLE_TERNARY_DPF
+	static_assert(!std::is_copy_constructible_v<TernaryDpf<block, CoeffCtxGF2>>);
+	static_assert(std::is_move_constructible_v<TernaryDpf<block, CoeffCtxGF2>>);
+
+	{
+		F3x32 mutableValue;
+		mutableValue.mVal = 0x9123456789abcdefull;
+		const F3x32 value = mutableValue;
+		if (value.lower(0).mVal != 0 || value.upper(0).mVal != value.mVal ||
+			value.lower(31).mVal != (value.mVal & ((1ull << 62) - 1)) ||
+			value.upper(31).mVal != (value.mVal >> 62) ||
+			value.lower(32).mVal != value.mVal || value.upper(32).mVal != 0)
+			throw UnitTestFail("F3x32 slicing mishandled a boundary digit count");
+		expectRejected([&] { (void)value.lower(33); },
+			"F3x32 lower slicing accepted too many digits");
+		expectRejected([&] { (void)value.upper(33); },
+			"F3x32 upper slicing accepted too many digits");
+	}
+
+	{
+		TernaryDpf<block, CoeffCtxGF2> ternary;
+		ternary.init(1, 3, 1);
+		auto count = ternary.baseOtCount();
+		std::vector<std::array<block, 2>> sendOts(count);
+		std::vector<block> recvOts(count);
+		BitVector choices(count);
+		ternary.setBaseOts(sendOts, recvOts, choices);
+		auto moved = std::move(ternary);
+		if (!moved.hasBaseOts() || ternary.hasBaseOts() || ternary.mPartyIdx ||
+			ternary.mDomain || ternary.mDepth || ternary.mNumPointsPerSet ||
+			ternary.mOtIdx || ternary.mBaseSendOts.size() ||
+			ternary.mBaseRecvOts.size() || ternary.mBaseChoice.size())
+			throw UnitTestFail("Ternary DPF move retained source correlation state");
+	}
+
+	{
+		TernaryDpf<block, CoeffCtxGF2> oversizedTernary;
+		expectRejected([&] {
+			oversizedTernary.init(0, ipow(3, 32), 431);
+		}, "Ternary DPF accepted wrapping derived storage dimensions");
+	}
+#endif
+
+#ifdef ENABLE_SPARSE_DPF
+	static_assert(!std::is_copy_constructible_v<SparseDpf>);
+	static_assert(std::is_move_constructible_v<SparseDpf>);
+	{
+		SparseDpf sparse;
+		sparse.init(1, 1, 8, 1);
+		auto moved = std::move(sparse);
+		if (moved.mDomain != 8 || sparse.mPartyIdx || sparse.mNumPoints ||
+			sparse.mDomain || sparse.mDenseDepth ||
+			sparse.mRegDpf.mMultiplier.mSendOts.size() ||
+			sparse.mMultiplier.mSendOts.size())
+			throw UnitTestFail("Sparse DPF move retained source state");
+	}
+
+	{
+		PRNG prng(block(0x4155442d303331ull, 0x4155442d303332ull));
+		coproto::Socket sock;
+		std::vector<block> noValues;
+
+		SparseDpf wrongRows;
+		wrongRows.init(0, 2, 8, 0);
+		std::vector<u64> onePoint{ 1 };
+		std::vector<std::vector<u32>> oneSet{ { 1 } };
+		expectRejected([&] {
+			macoro::sync_wait(wrongRows.expand(onePoint, noValues,
+				[](auto, auto, auto, auto) {}, prng, oneSet, sock));
+		}, "Sparse DPF accepted the wrong row count");
+
+		auto rejectSet = [&](std::vector<u32> set, const char* message) {
+			SparseDpf sparse;
+			sparse.init(0, 1, 8, 0);
+			std::vector<std::vector<u32>> sets{ std::move(set) };
+			expectRejected([&] {
+				macoro::sync_wait(sparse.expand(onePoint, noValues,
+					[](auto, auto, auto, auto) {}, prng, sets, sock));
+			}, message);
+		};
+		rejectSet({ 2, 1 }, "Sparse DPF accepted an unsorted sparse set");
+		rejectSet({ 1, 1 }, "Sparse DPF accepted duplicate sparse points");
+		rejectSet({ 1, 8 }, "Sparse DPF accepted an out-of-domain sparse point");
+
+		SparseDpf singleton;
+		singleton.init(0, 1, 8, 0);
+		// These local-only fixtures have no internal nodes or connected peer.
+		singleton.setTreeHashSeed(block(0x4155444954ull, 1));
+		u64 outputs = 0;
+		macoro::sync_wait(singleton.expand(onePoint, noValues,
+			[&](auto, auto, auto, auto) { ++outputs; }, prng, oneSet, sock));
+		if (outputs != 1)
+			throw UnitTestFail("Sparse DPF did not expand a singleton sparse set");
+
+		SparseDpf empty;
+		empty.init(0, 1, 8, 0);
+		empty.setTreeHashSeed(block(0x4155444954ull, 2));
+		std::vector<std::vector<u32>> emptySet(1);
+		outputs = 0;
+		macoro::sync_wait(empty.expand(onePoint, noValues,
+			[&](auto, auto, auto, auto) { ++outputs; }, prng, emptySet, sock));
+		if (outputs != 0)
+			throw UnitTestFail("Sparse DPF emitted a leaf for an empty sparse set");
+
+		{
+			SparseDpf sparse;
+			std::vector<block> sigma{ block(1, 2) };
+			std::vector<std::array<u8, 2>> tau{ { 1, 0 } };
+			auto originalSigma = sigma;
+			auto originalTau = tau;
+			auto sockets = coproto::LocalAsyncSocket::makePair();
+			auto sendInvalidTau = [&]() -> macoro::task<> {
+				std::vector<block> peerSigma(1);
+				std::vector<std::array<u8, 2>> peerTau(1);
+				co_await sockets[1].recv(peerSigma);
+				co_await sockets[1].recv(peerTau);
+				peerTau[0] = { 2, 0 };
+				co_await sockets[1].send(std::move(peerSigma));
+				co_await sockets[1].send(std::move(peerTau));
+			};
+
+			auto results = macoro::sync_wait(macoro::when_all_ready(
+				sparse.reveal(sigma, tau, sockets[0]), sendInvalidTau()));
+			bool rejected = false;
+			try { std::get<0>(results).result(); }
+			catch (const std::exception&) { rejected = true; }
+			std::get<1>(results).result();
+			if (!rejected || sigma != originalSigma || tau != originalTau)
+				throw UnitTestFail(
+					"Sparse DPF accepted or applied a non-bit peer tau value");
+		}
+
+		{
+			SparseDpf sparse;
+			std::vector<block> sigma(1);
+			std::vector<std::array<u8, 2>> tau(1);
+			auto sockets = coproto::LocalAsyncSocket::makePair();
+			auto closeBeforeReply = [&]() -> macoro::task<> {
+				std::vector<block> peerSigma(1);
+				std::vector<std::array<u8, 2>> peerTau(1);
+				co_await sockets[1].recv(peerSigma);
+				co_await sockets[1].recv(peerTau);
+				co_await sockets[1].close();
+			};
+
+			auto results = macoro::sync_wait(macoro::when_all_ready(
+				sparse.reveal(sigma, tau, sockets[0]), closeBeforeReply()));
+			bool failed = false;
+			try { std::get<0>(results).result(); }
+			catch (const std::exception&) { failed = true; }
+			std::get<1>(results).result();
+			if (!failed)
+				throw UnitTestFail("Sparse DPF suppressed a parallel receive failure");
+		}
+	}
+#endif
+}
+
+

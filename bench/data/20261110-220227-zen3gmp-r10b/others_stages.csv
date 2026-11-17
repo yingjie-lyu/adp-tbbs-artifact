@@ -1,0 +1,21 @@
+scheme,t,stage,mean_ms_per_signer
+"tx25-bbs (2 offline + 1 online)",6,"offline output",655.3594
+"tx25-bbs (2 offline + 1 online)",6,"offline r1",55.5163
+"tx25-bbs (2 offline + 1 online)",6,"offline r2",490.3405
+"tx25-bbs (2 offline + 1 online)",6,"online",3.1682
+"tx25-bbs (2 offline + 1 online)",6,"output",11.0678
+"tx25-bbs (2 offline + 1 online)",7,"offline output",833.3753
+"tx25-bbs (2 offline + 1 online)",7,"offline r1",55.6930
+"tx25-bbs (2 offline + 1 online)",7,"offline r2",570.5525
+"tx25-bbs (2 offline + 1 online)",7,"online",3.1848
+"tx25-bbs (2 offline + 1 online)",7,"output",11.4990
+"wmc24-bbs (4 rounds)",6,"sign output",238.0386
+"wmc24-bbs (4 rounds)",6,"sign r1",110.9445
+"wmc24-bbs (4 rounds)",6,"sign r2",506.2239
+"wmc24-bbs (4 rounds)",6,"sign r3",505.8422
+"wmc24-bbs (4 rounds)",6,"sign r4",153.7110
+"wmc24-bbs (4 rounds)",7,"sign output",287.3101
+"wmc24-bbs (4 rounds)",7,"sign r1",113.4914
+"wmc24-bbs (4 rounds)",7,"sign r2",593.4643
+"wmc24-bbs (4 rounds)",7,"sign r3",598.8109
+"wmc24-bbs (4 rounds)",7,"sign r4",174.3402

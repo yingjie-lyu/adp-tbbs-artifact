@@ -1,0 +1,845 @@
+#pragma once
+#include "libOTe/Vole/Noisy/NoisyVoleSender.h"
+#include "cryptoTools/Common/BitIterator.h"
+#include "cryptoTools/Common/BitVector.h"
+#include <sstream>
+#include <cryptoTools/Common/block.h>
+#include <iterator>
+#include <limits>
+#include <stdexcept>
+
+namespace osuCrypto {
+	namespace fieldSampling
+	{
+		// Return the first exact uniform residue available in the candidate
+		// stream. Rejection is negligible for the prime fields used by libOTe.
+		OC_FORCEINLINE u64 reduceAccepted(u64 value, u64 modulus)
+		{
+			if (modulus > std::numeric_limits<u64>::max() / 2)
+				return value >= modulus ? value - modulus : value;
+			return value % modulus;
+		}
+
+		OC_FORCEINLINE u64 rejectionThreshold(u64 modulus)
+		{
+			if (modulus < 2)
+				throw std::invalid_argument(
+					"Field sampling modulus must be at least two. " LOCATION);
+			return (u64{ 0 } - modulus) % modulus;
+		}
+
+		OC_FORCEINLINE u64 sample(PRNG& prng, u64 modulus)
+		{
+			const auto threshold = rejectionThreshold(modulus);
+			u64 value;
+			do
+				value = prng.get<u64>();
+			while (value < threshold);
+			return reduceAccepted(value, modulus);
+		}
+
+		OC_FORCEINLINE u64 fromBlock(block sample, u64 modulus)
+		{
+			const auto threshold = rejectionThreshold(modulus);
+			for (;;)
+			{
+				const auto lo = sample.get<u64>(0);
+				if (lo >= threshold)
+					return reduceAccepted(lo, modulus);
+
+				const auto hi = sample.get<u64>(1);
+				if (hi >= threshold)
+					return reduceAccepted(hi, modulus);
+
+				// Both candidates were rejected. This path is negligible for the
+				// supported fields and does not affect the common leaf-expansion path.
+				sample = mAesFixedKey.hashBlock(sample);
+			}
+		}
+	}
+
+	/*
+	 * Primitive CoeffCtx for integers-like types
+	 *
+	 * This class implements the required functions to perform a vole
+	 *
+	 * The core functions are plus, minus, mul. However, additional function
+	 * and types are required.
+	 */
+	struct CoeffCtxInteger
+	{
+	private:
+		template<typename Iter>
+		static std::size_t checkedRangeSize(Iter begin, Iter end)
+		{
+			auto count = std::distance(begin, end);
+			if constexpr (std::is_signed_v<decltype(count)>)
+			{
+				if (count < 0)
+					throw std::invalid_argument(
+						"Coefficient range must not be reversed. " LOCATION);
+			}
+
+			using Count = std::make_unsigned_t<decltype(count)>;
+			if (static_cast<Count>(count) >
+				static_cast<Count>(std::numeric_limits<std::size_t>::max()))
+				throw std::length_error(
+					"Coefficient range exceeds the addressable size. " LOCATION);
+			return static_cast<std::size_t>(count);
+		}
+
+		template<typename T>
+		static std::size_t checkedRangeBytes(std::size_t count)
+		{
+			if (count > std::numeric_limits<std::size_t>::max() / sizeof(T))
+				throw std::length_error(
+					"Coefficient range byte size overflows. " LOCATION);
+			return count * sizeof(T);
+		}
+
+	public:
+		template<typename R, typename F1, typename F2>
+		OC_FORCEINLINE void plus(R&& ret, F1&& lhs, F2&& rhs)const {
+			ret = lhs + rhs;
+		}
+
+		template<typename R, typename F1, typename F2>
+		OC_FORCEINLINE void minus(R&& ret, F1&& lhs, F2&& rhs) const {
+			ret = lhs - rhs;
+		}
+		template<typename R, typename F1, typename F2>
+		OC_FORCEINLINE void mul(R&& ret, F1&& lhs, F2&& rhs)const {
+			ret = lhs * rhs;
+		}
+
+		OC_FORCEINLINE bool eq(auto&& lhs, auto&& rhs)const {
+			return lhs == rhs;
+		}
+
+		// is G a field?
+		template<typename G>
+		OC_FORCEINLINE bool isField() const {
+			return false; // default.
+		}
+
+		// Bit length of the smallest nonzero additive subgroup. Integer-like
+		// coefficient rings contain an order-two subgroup by default.
+		template<typename G>
+		constexpr u64 additiveGroupBitCount() const
+		{
+			return 1;
+		}
+
+		// is G characteristic 2 where x+x = 0?
+		template<typename G>
+		bool characteristicTwo()const
+		{
+			auto v = make<G>();
+			auto z = make<G>();
+			one(v);
+			zero(z);
+			plus(v, v, v);
+			return eq(v, z); // char 2 if 1+1 = 0;
+		}
+
+		// Contract for the fixed linear mixing operation used by the binary
+		// structured LPN encoders (EA, ExConv, BlkAcc, and Tungsten):
+		//
+		// * A scalar prime-field or base-ring context, such as Fp or Z_(2^k),
+		//   may use the identity below.
+		// * Every extension-field context must override mulConst and multiply by
+		//   a fixed element of full algebraic degree over its prime field. Thus
+		//   the powers of the multiplication map span every extension component,
+		//   instead of preserving a proper base-field subspace. Merely choosing
+		//   an element outside the prime field is sufficient only when the
+		//   extension degree is prime.
+		// * A dense multiplication matrix can mix the stored components in fewer
+		//   applications and might improve resistance to splitting or low-weight
+		//   attacks. That is a useful heuristic, not a proved requirement of the
+		//   current parameter analysis; orbit-spanning mixing is the contract.
+		// * Product/vector contexts must apply the scalar context's mulConst to
+		//   every lane. Product lanes remain independent, while the components
+		//   inside each extension-field lane are mixed.
+		//
+		// Implementations must support ret aliasing x; the encoding kernels use
+		// mulConst in place. The operation is fixed and deterministic so sender
+		// and receiver instantiate the same linear code.
+		template<typename F>
+		OC_FORCEINLINE void mulConst(F& ret, const F& x)const
+		{
+			ret = x;
+		}
+
+        // the bit size require to prepresent F
+        // the protocol will perform binary decomposition
+        // of F using this many bits
+        template<typename F>
+        u64 bitSize() const
+        {
+            if constexpr (std::is_same_v<F, bool>)
+                return 1;
+            else
+                return sizeof(F) * 8;
+        }
+
+		// return the binary decomposition of x. This will be used to 
+		// reconstruct x as   
+		// 
+		//     x = sum_{i = 0,...,n} 2^i * binaryDecomposition(x)[i]
+		//
+		template<typename F>
+		OC_FORCEINLINE BitVector binaryDecomposition(F& x) const {
+			static_assert(std::is_trivially_copyable<F>::value, "memcpy is used so must be trivially_copyable.");
+			return { (u8*)&x, bitSize<F>() };
+		}
+
+		// derive an F using the randomness b. 
+		template<typename F>
+		OC_FORCEINLINE void fromBlock(F& ret, const block& b) const {
+			static_assert(std::is_trivially_copyable<F>::value, "memcpy is used so must be trivially_copyable.");
+
+
+            if constexpr (std::is_same<F, block>::value)
+            {
+                // if F is a block, just return the block.
+                ret = b;
+            }
+            else if constexpr (std::is_same<F, bool>::value)
+            {
+                // if F is a bit, just return a bit.
+                ret = b.get<u8>(0) & 1;
+            }
+            else if constexpr (sizeof(F) <= sizeof(block))
+            {
+                // if small, just return the bytes of b
+                memcpy(&ret, &b, sizeof(F));
+            }
+            else
+            {
+                // if large, we need to expand the seed. using fixed key AES in counter mode
+                // with b as the IV.
+                auto constexpr size = (sizeof(F) + sizeof(block) - 1) / sizeof(block);
+                std::array<block, size> buffer;
+                mAesFixedKey.ecbEncCounterMode(b, buffer);
+                memcpy(&ret, buffer.data(), sizeof(ret));
+            }
+        }
+
+		// Uniformly sample a unit of the default integer ring Z_{2^k}. Setting
+		// the low bit maps a uniform ring element to a uniform odd element.
+		template<typename G>
+		OC_FORCEINLINE void sampleUnit(G& ret, PRNG& prng) const
+		{
+			fromBlock(ret, prng.get<block>());
+			if (!binaryDecomposition(ret)[0])
+			{
+				auto oneValue = make<G>();
+				one(oneValue);
+				plus(ret, ret, oneValue);
+			}
+		}
+
+		// Return the F element with value 2^power. The unchecked form is for
+		// callers that validate a whole decomposition domain before a hot loop.
+		template<typename F>
+		OC_FORCEINLINE void powerOfTwoUnchecked(F& ret, u64 power)const {
+			static_assert(std::is_trivially_copyable<F>::value, "memcpy is used so must be trivially_copyable.");
+			memset(&ret, 0, sizeof(F));
+			*BitIterator((u8*)&ret, power) = 1;
+		}
+
+		template<typename F>
+		OC_FORCEINLINE void powerOfTwo(F& ret, u64 power)const {
+			constexpr u64 storageBits = std::is_same_v<F, bool> ? 1 : sizeof(F) * 8;
+			if (power >= storageBits)
+				throw std::out_of_range(
+					"Power-of-two index exceeds coefficient storage. " LOCATION);
+			powerOfTwoUnchecked(ret, power);
+		}
+
+		// A vector like type that can be used to store
+		// temporaries. 
+		// 
+		// must have:
+		//  * size()
+		//  * operator[i] that returns the i'th F element reference.
+		//  * begin() iterator over the F elements
+		//  * end() iterator over the F elements
+		template<typename F>
+		using Vec = std::conditional_t<std::is_trivially_constructible_v<F>, AlignedUnVector<F>, std::vector<F>>;
+
+		// resize Vec<F>
+		template<typename VecF>
+		void resize(VecF& f, u64 size)const
+		{
+			f.resize(size);
+		}
+
+
+		// return a new vector of F.
+		template<typename F>
+		auto makeVec(u64 size)const
+		{
+			return Vec<F>(size);
+		}
+
+		// return a new F or something that is implicitly convertable to one.
+		template<typename F>
+		auto make()const
+		{
+			return F{};
+		}
+
+		// the size of F when serialized.
+		template<typename F>
+		u64 byteSize()const
+		{
+			return sizeof(F);
+		}
+
+		// copy a single F element.
+		template<typename F>
+		OC_FORCEINLINE void copy(F& dst, const F& src)const
+		{
+			dst = src;
+		}
+
+		// copy [begin,...,end) into [dstBegin, ...)
+		// the iterators will point to the same types, i.e. F
+		template<typename SrcIter, typename DstIter>
+		OC_FORCEINLINE void copy(
+			SrcIter begin,
+			SrcIter end,
+			DstIter dstBegin)const
+		{
+			using F1 = std::remove_reference_t<decltype(*begin)>;
+			using F2 = std::remove_reference_t<decltype(*dstBegin)>;
+			static_assert(std::is_trivially_copyable<F1>::value, "memcpy is used so must be trivially_copyable.");
+			static_assert(std::is_same_v<F1, F2>, "src and destication types are not the same.");
+
+			auto n = checkedRangeSize(begin, end);
+			if (n)
+				memcpy((F2 * __restrict) & *dstBegin, (F1 * __restrict) & *begin,
+					checkedRangeBytes<F1>(n));
+			//std::copy(begin, end, dstBegin);
+		}
+
+		// deserialize [begin,...,end) into  [dstBegin, ...)
+		// begin will be a u8 pointer/iterator.
+		// dstBegin will be an F pointer/iterator
+		template<typename SrcIter, typename DstIter>
+		void deserialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin)const
+		{
+			// as written this function is a bit more general than strictly neccessary
+			// due to serialize(...) redirecting here.
+			using SrcType = std::remove_reference_t<decltype(*begin)>;
+			using DstType = std::remove_reference_t<decltype(*dstBegin)>;
+			static_assert(std::is_trivially_copyable<SrcType>::value, "source serialization types must be trivially_copyable.");
+			static_assert(std::is_trivially_copyable<DstType>::value, "destination serialization types must be trivially_copyable.");
+
+			// how many source elem do we have?
+			auto srcN = checkedRangeSize(begin, end);
+			if (srcN)
+			{
+				// the source size in bytes
+				auto n = checkedRangeBytes<SrcType>(srcN);
+
+				// The byte size must be a multiple of the destination element byte size.
+				if (n % sizeof(DstType))
+				{
+					throw std::invalid_argument(
+						"Serialized coefficient byte size is not a multiple of the destination element size. " LOCATION);
+				}
+				// the number of destination elements.
+				auto dstN = n / sizeof(DstType);
+
+				// make sure the pointer math work with this iterator type.
+				auto beginU8 = (u8*)&*begin;
+				auto dstBeginU8 = (u8*)&*dstBegin;
+
+				auto dstBackPtr = dstBeginU8 + (n - sizeof(DstType));
+				auto dstBackIter = dstBegin + (dstN - 1);
+
+				// try to deref the back. might bounds check.
+				// And check that the pointer math works
+				if (dstBackPtr != (u8*)&*dstBackIter)
+				{
+					throw std::invalid_argument(
+						"Destination coefficient iterator is not contiguous. " LOCATION);
+				}
+
+				auto srcBackPtr = beginU8 + (n - sizeof(SrcType));
+				auto srcBackIter = begin + (srcN - 1);
+
+				// try to deref the back. might bounds check.
+				// And check that the pointer math works
+				if (srcBackPtr != (u8*)&*srcBackIter)
+				{
+					throw std::invalid_argument(
+						"Source coefficient iterator is not contiguous. " LOCATION);
+				}
+
+				// memcpy the bytes
+				std::memcpy(dstBeginU8, beginU8, n);
+			}
+		}
+
+		// serialize [begin,...,end) into  [dstBegin, ...)
+		// begin will be an F pointer/iterator
+		// dstBegin will be a byte pointer/iterator.
+		template<typename SrcIter, typename DstIter>
+		void serialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin)const
+		{
+			// for primitive types serialization and deserializaion 
+			// are the same, a memcpy.
+			deserialize(begin, end, dstBegin);
+		}
+
+
+		// If unsure you can just return iter. iter will be 
+		// a Vec<F>::iterator or const of it.
+		// This function allows for some compiler optimziations/
+		// The idea is to return a pointer with the __restrict
+		// attibute. If this does not make sense for your Vec<F>::iterator,
+		// just return the iterator.
+		template<typename F, typename Iter>
+		F* __restrict restrictPtr(Iter iter)const
+		{
+			return &*iter;
+		}
+
+
+		// fill the range [begin,..., end) with zeros. 
+		// begin will be an F pointer/iterator.
+		template<typename Iter>
+		void zero(Iter begin, Iter end)const
+		{
+			using F = std::remove_reference_t<decltype(*begin)>;
+			static_assert(std::is_trivially_copyable<F>::value, "memset is used so must be trivially_copyable.");
+
+			if (begin != end)
+			{
+				auto n = checkedRangeSize(begin, end);
+				memset(&*begin, 0, checkedRangeBytes<F>(n));
+			}
+		}
+
+		// fill the range [begin,..., end) with zeros. 
+		// begin will be an F pointer/iterator.
+		template<typename F>
+		void zero(F&& x)const
+		{
+
+			if constexpr (requires(F x) { std::remove_cvref_t<F>::zero(); })
+				x = std::remove_cvref_t<F>::zero();
+			else
+				x = std::remove_cvref_t<F>(0);
+		}
+
+
+		// fill the range [begin,..., end) with ones. 
+		// begin will be an F pointer/iterator.
+		template<typename Iter>
+		void one(Iter begin, Iter end)const
+		{
+			using F = std::remove_reference_t<decltype(*begin)>;
+
+			if (begin != end)
+			{
+				auto n = checkedRangeSize(begin, end);
+
+				if constexpr (requires(F x) { F::one(); })
+				{
+					for (std::size_t i = 0; i < n; ++i)
+						begin[i] = F::one();
+				}
+				else
+				{
+					static_assert(std::is_trivially_copyable<F>::value, "memset is used so must be trivially_copyable.");
+
+					memset(&*begin, 0, checkedRangeBytes<F>(n));
+					while (begin != end)
+					{
+						auto& v = *begin++;
+						*(u8*)&v = 1;
+					}
+				}
+			}
+		}
+
+
+		// fill the range [begin,..., end) with zeros. 
+		// begin will be an F pointer/iterator.
+		template<typename F>
+		void one(F&& x)const
+		{
+			using FF = std::remove_cvref_t<F>;
+			if constexpr (requires(FF x) { x = FF::one(); })
+			{
+				x = FF::one();
+			}
+			else
+				x = FF(1);
+		}
+
+		// convert F into a string
+		template<typename F>
+		std::string str(F&& f)const
+		{
+			std::stringstream ss;
+			if constexpr (std::is_same_v<std::remove_reference_t<F>, u64>)
+			{
+				ss << i64(f);
+			}
+			else if constexpr (std::is_same_v<std::remove_reference_t<F>, u8>)
+				ss << int(f);
+			else
+				ss << f;
+
+			return ss.str();
+		}
+
+
+		// given x and a masking block `mask` with value 0x0000...00 or 0xffff...ff,
+		// return F(0) if `mask` is 0 and otherwise return x.
+		template<typename F>
+		void mask(F& ret, const F& x, const block& mask)const
+		{
+			if constexpr (
+				requires(F & x) { x = x & x; } &&
+				std::is_standard_layout<F>::value &&
+				std::is_trivial<F>::value &&
+				(sizeof(F) <= sizeof(block)) &&
+				(sizeof(block) % sizeof(F) == 0))
+			{
+				F y = mask.get<F>(0);;
+				ret = x & y;
+			}
+			else
+			{
+				static_assert(std::is_trivially_copyable<F>::value, "memcpy is used so must be trivially_copyable.");
+				if constexpr (sizeof(F) % sizeof(block) == 0)
+				{
+					// block oriented
+					block temp[sizeof(F) / sizeof(block)];
+					memcpy(&temp, &x, sizeof(F));
+					for (u64 i = 0; i < sizeof(F) / sizeof(block); ++i)
+						temp[i] &= mask;
+					memcpy(&ret, &temp, sizeof(F));
+				}
+				else
+				{
+					// byte oriented
+					auto m = mask.get<u8>(0);
+					u8 temp[sizeof(F)];
+					memcpy(&temp, &x, sizeof(F));
+					for (u64 i = 0; i < sizeof(F); ++i)
+						temp[i] &= m;
+					memcpy(&ret, &temp, sizeof(F));
+				}
+			}
+		}
+
+	};
+
+
+
+	// block does not use operator*
+	struct CoeffCtxGF2 : CoeffCtxInteger
+	{
+		template<typename F>
+		constexpr double regularNoiseFactor() const
+		{
+			// CoeffCtxGF2 is also the base of CoeffCtxGF128. A nonzero
+			// coefficient has factor q/(q-1): 2 for GF(2), effectively 1
+			// for the block-sized extension field.
+			return std::is_same_v<std::remove_cvref_t<F>, bool> ? 2.0 : 1.0;
+		}
+
+		template<typename F>
+		OC_FORCEINLINE void plus(F& ret, const F& lhs, const F& rhs)const {
+			ret = lhs ^ rhs;
+		}
+		template<typename F>
+		OC_FORCEINLINE void minus(F& ret, const F& lhs, const F& rhs)const {
+			ret = lhs ^ rhs;
+		}
+		template<typename F>
+		OC_FORCEINLINE void mul(F& ret, const F& lhs, const F& rhs) const {
+			ret = lhs & rhs;
+		}
+
+		template<typename F>
+		OC_FORCEINLINE void mul(F& ret, const F& lhs, const bool& rhs) const {
+			ret = rhs ? lhs : zeroElem<F>();
+		}
+
+		// the bit size require to prepresent F
+		// the protocol will perform binary decomposition
+		// of F using this many bits
+		template<typename F>
+		u64 bitSize()const
+		{
+			if (std::is_same<bool, F>::value)
+				return 1;
+			else
+				return sizeof(F) * 8;
+		}
+
+		// is F a field?
+		template<typename F>
+		OC_FORCEINLINE bool isField() const {
+			return true; // default.
+		}
+
+		template<typename G>
+		bool characteristicTwo()const
+		{
+			return true; // GF2 is characteristic 2.
+		}
+
+		template<typename F>
+		static OC_FORCEINLINE constexpr F zeroElem()
+		{
+			static_assert(std::is_trivially_copyable<F>::value, "memset is used so must be trivially_copyable.");
+			F r;
+			memset(&r, 0, sizeof(F));
+			return r;
+		}
+	};
+
+
+	// block does not use operator*
+	struct CoeffCtxGF128 : CoeffCtxGF2
+	{
+
+		OC_FORCEINLINE void mul(block& ret, const block& lhs, const block& rhs) const {
+			ret = lhs.gf128Mul(rhs);
+		}
+
+		// Multiply by a fixed full-degree element so repeated applications span
+		// all GF(2^128) components. Field_Audit_Test verifies that this element
+		// is outside GF(2^64), and therefore every proper subfield of GF(2^128).
+		// See the extension-field mulConst contract in CoeffCtxInteger.
+		OC_FORCEINLINE void mulConst(block& ret, const block& x)const
+		{
+			// multiplication y modulo mod
+			block y(0, 4234123421);
+
+#ifdef ENABLE_SSE
+			static const constexpr std::uint64_t mod = 0b10000111;
+			const __m128i modulus = _mm_loadl_epi64((const __m128i*) & (mod));
+
+			block xy1 = _mm_clmulepi64_si128(x, y, (int)0x00);
+			block xy2 = _mm_clmulepi64_si128(x, y, 0x01);
+			xy1 = xy1 ^ _mm_slli_si128(xy2, 8);
+			xy2 = _mm_srli_si128(xy2, 8);
+
+			/* reduce w.r.t. high half of mul256_high */
+			auto tmp = _mm_clmulepi64_si128(xy2, modulus, 0x00);
+			ret = _mm_xor_si128(xy1, tmp);
+#else
+			ret = x.gf128Mul(y);
+#endif
+		}
+	};
+
+
+	template<typename G, u64 N>
+	struct CoeffCtxArray : CoeffCtxInteger
+	{
+		using F = std::array<G, N>;
+		using CoeffCtxInteger::one;
+		using CoeffCtxInteger::zero;
+
+		OC_FORCEINLINE void zero(F& ret) const
+		{
+			for (auto& value : ret)
+				CoeffCtxInteger::zero(value);
+		}
+
+		OC_FORCEINLINE void one(F& ret) const
+		{
+			for (auto& value : ret)
+				CoeffCtxInteger::one(value);
+		}
+
+		template<typename T>
+		bool characteristicTwo() const
+		{
+			if constexpr (std::is_same_v<std::remove_cvref_t<T>, F>)
+				return CoeffCtxInteger::template characteristicTwo<G>();
+			else
+				return CoeffCtxInteger::template characteristicTwo<T>();
+		}
+
+		OC_FORCEINLINE void plus(F& ret, const F& lhs, const F& rhs) const {
+			for (u64 i = 0; i < lhs.size(); ++i) {
+				ret[i] = lhs[i] + rhs[i];
+			}
+		}
+
+		OC_FORCEINLINE void plus(G& ret, const  G& lhs, const G& rhs) const {
+			ret = lhs + rhs;
+		}
+
+		OC_FORCEINLINE void minus(F& ret, const F& lhs, const F& rhs)const
+		{
+			for (u64 i = 0; i < lhs.size(); ++i) {
+				ret[i] = lhs[i] - rhs[i];
+			}
+		}
+
+		OC_FORCEINLINE void minus(G& ret, const G& lhs, const G& rhs)const {
+			ret = lhs - rhs;
+		}
+
+		OC_FORCEINLINE void mul(F& ret, const F& lhs, const G& rhs)const
+		{
+			for (u64 i = 0; i < lhs.size(); ++i) {
+				ret[i] = lhs[i] * rhs;
+			}
+		}
+
+		OC_FORCEINLINE bool eq(const F& lhs, const F& rhs)const
+		{
+			for (u64 i = 0; i < lhs.size(); ++i) {
+				if (lhs[i] != rhs[i])
+					return false;
+			}
+			return true;
+		}
+
+		OC_FORCEINLINE bool eq(const G& lhs, const G& rhs)const
+		{
+			return lhs == rhs;
+		}
+
+		// convert F into a string
+		std::string str(const F& f)const
+		{
+			auto delim = "{ ";
+			std::stringstream ss;
+			for (u64 i = 0; i < f.size(); ++i)
+			{
+				ss << std::exchange(delim, ", ");
+
+				if constexpr (std::is_same_v<std::remove_reference_t<G>, u8>)
+					ss << int(f[i]);
+				else
+					ss << f[i];
+
+			}
+			ss << " }";
+
+			return ss.str();
+		}
+
+		// convert G into a string
+		std::string str(const G& g)const
+		{
+			std::stringstream ss;
+			if constexpr (std::is_same_v<std::remove_reference_t<G>, u8>)
+				ss << int(g);
+			else
+				ss << g;
+
+			return ss.str();
+		}
+
+	};
+
+	template<typename F, typename G = F>
+	struct DefaultCoeffCtx_t {
+		using type = CoeffCtxInteger;
+	};
+
+	// GF128 vole
+	template<>
+	struct DefaultCoeffCtx_t<block, block> {
+		using type = CoeffCtxGF128;
+	};
+
+	// OT, gf2
+	template<> struct DefaultCoeffCtx_t<block, bool> {
+		using type = CoeffCtxGF2;
+	};
+
+	template<typename F, typename G = F>
+	using DefaultCoeffCtx = typename DefaultCoeffCtx_t<F, G>::type;
+
+	// Regular-noise LPN samples require every selected coefficient to be a
+	// multiplicative unit. This is nonzero for fields and odd for the default
+	// integer rings Z_{2^k}. Product and other nonfield contexts can override
+	// the fallback by providing sampleUnit(G&, PRNG&) and isUnit(const G&).
+	template<typename G, typename Ctx>
+	OC_FORCEINLINE bool isRegularNoiseUnit(const G& value, const Ctx& ctx)
+	{
+		if (ctx.template isField<G>())
+		{
+			auto zero = ctx.template make<G>();
+			ctx.zero(zero);
+			return !ctx.eq(value, zero);
+		}
+
+		if constexpr (requires { ctx.isUnit(value); })
+			return ctx.isUnit(value);
+
+		// CoeffCtxInteger models Z_{2^k}, whose units are exactly the odd
+		// elements. Custom nonfield rings should provide isUnit().
+		auto copy = value;
+		return ctx.binaryDecomposition(copy)[0];
+	}
+
+	template<typename G, typename Ctx>
+	OC_FORCEINLINE void sampleRegularNoiseUnit(G& value, PRNG& prng, const Ctx& ctx)
+	{
+		if (ctx.template isField<G>())
+		{
+			if constexpr (requires { value = ctx.sampleNonZero(prng); })
+			{
+				value = ctx.sampleNonZero(prng);
+			}
+			else
+			{
+				do
+					ctx.fromBlock(value, prng.get<block>());
+				while (!isRegularNoiseUnit(value, ctx));
+			}
+		}
+		else if constexpr (requires { ctx.sampleUnit(value, prng); })
+		{
+			ctx.sampleUnit(value, prng);
+		}
+		else
+		{
+			do
+				ctx.fromBlock(value, prng.get<block>());
+			while (!isRegularNoiseUnit(value, ctx));
+		}
+	}
+
+	// Preserve compatibility with custom coefficient contexts that predate the
+	// explicit additive-group interface.
+	template<typename G, typename Ctx>
+	constexpr u64 coefficientGroupBitCount(const Ctx& ctx)
+	{
+		if constexpr (requires { ctx.template additiveGroupBitCount<G>(); })
+			return ctx.template additiveGroupBitCount<G>();
+		else
+			return ctx.template isField<G>() ? ctx.template bitSize<G>() : 1;
+	}
+
+	// For regular noise, the worst nontrivial additive character has one-hit
+	// factor q/(q-1) when coefficients are uniform in F_q^*. Integer-like
+	// contexts use odd units and therefore the binary factor 2. Unknown field
+	// contexts conservatively use the limiting large-field factor 1.
+	template<typename G, typename Ctx>
+	constexpr double coefficientRegularNoiseFactor(const Ctx& ctx)
+	{
+		if constexpr (requires { ctx.template regularNoiseFactor<G>(); })
+			return ctx.template regularNoiseFactor<G>();
+		else
+			return ctx.template isField<G>() ? 1.0 : 2.0;
+	}
+}

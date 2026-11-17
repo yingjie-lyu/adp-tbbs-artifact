@@ -1,0 +1,98 @@
+#pragma once
+// © 2016 Peter Rindal.
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+#include <cryptoTools/Common/Defines.h>
+#include <cryptoTools/Common/Aligned.h>
+#include <string>
+#include <vector>
+
+namespace osuCrypto
+{
+
+    class PRNG;
+    class LinearCode
+    {
+    public:
+        static const u16 sLinearCodePlainTextMaxSize;
+		static const u64 sLinearCodeCodewordBitMaxSize;
+
+        LinearCode();
+        ~LinearCode();
+        LinearCode(const LinearCode& cp);
+
+
+        void loadTxtFile(const std::string& fileName);
+        void loadTxtFile(std::istream& in);
+
+        void load(const unsigned char* data, u64 size);
+
+        void loadBinFile(const std::string& fileName);
+        void loadBinFile(std::istream& in);
+
+        // outputs a c file contains an char array containing the binary data. e.g. bch511.h
+        void writeBinCppFile(const std::string& fileName, const std::string & name);
+
+        void writeBinFile(const std::string& fileName);
+        void writeBinFile(std::ostream& out);
+
+
+
+        void writeTextFile(const std::string& fileName);
+        void writeTextFile(std::ostream& out);
+
+
+
+        void random(PRNG& prng, u64 inputSize, u64 outputSize);
+
+        void generateMod8Table();
+
+        u64 mU8RowCount = 0, mPow2CodeSize = 0, mPlaintextU8Size = 0;
+        u64 mCodewordBitSize = 0;
+        AlignedUnVector<block> mG;
+        AlignedUnVector<block> mG8;
+
+        inline u64 codewordBitSize() const
+        {
+            return mCodewordBitSize;
+        }
+
+        inline u64 codewordBlkSize() const
+        {
+            return (codewordBitSize() + 127) / 128;
+        }
+        inline u64 plaintextBitSize() const
+        {
+			const u64 blocks = codewordBlkSize();
+            return blocks ? mG.size() / blocks : 0;
+        }
+        inline u64 plaintextBlkSize() const
+        {
+            return (plaintextBitSize() + 127) / 128;
+        }
+
+        inline u64 plaintextU8Size() const
+        {
+            return mPlaintextU8Size;
+        }
+
+        inline u64 codewordU8Size() const
+        {
+            return (codewordBitSize() + 7) / 8;
+        }
+
+
+
+        void encode(const span<const block>& plaintext,const span<block>& codeword) const;
+        void encode(const span<const u8>& plaintext, const span<u8>& codeword) const;
+        void encode(const u8* plaintext, u8* codeword) const;
+
+        void encode_bch511(u8* plaintext, u8* codeword);
+
+    };
+
+}

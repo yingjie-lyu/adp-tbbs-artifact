@@ -1,0 +1,447 @@
+#pragma once
+// © 2022 Visa.
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+#include "libOTe/config.h"
+#ifdef ENABLE_BITPOLYMUL
+
+#include "cryptoTools/Crypto/PRNG.h"
+#include "cryptoTools/Common/Defines.h"
+#include "cryptoTools/Common/Range.h"
+#include "cryptoTools/Common/Aligned.h"
+#include "cryptoTools/Common/Matrix.h"
+#include "cryptoTools/Common/Timer.h"
+#include "cryptoTools/Common/ThreadBarrier.h"
+#include "bitpolymul.h"
+#include "Tools.h"
+#include "LDPC/Mtx.h"
+#include "libOTe/TwoChooseOne/TcoOtDefines.h"
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+
+namespace osuCrypto
+{
+
+    // https://eprint.iacr.org/2019/1159.pdf
+    struct QuasiCyclicCode : public TimerAdapter
+    {
+    private:
+
+        // the length of the encoding
+        u64 mMessageSize = 0;
+
+
+        // the length of the input. mCodeSize = mMessageSize * mScaler;
+        u64 mCodeSize = 0;
+
+        // A prime strictly greater than mMessageSize. The internal cyclic
+        // blocks use this modulus and the output is truncated to mMessageSize.
+        u64 mPrimeModulus = 0;
+
+        // the randomness used to generate the code.
+		block mSeed = ZeroBlock;
+
+    public:
+
+        //size of the input
+        u64 size() { return mCodeSize; }
+
+        void init2(u64 messageSize, u64 codeSize, block seed = block(4321234327842623191,423723984231774321))
+        {
+			if (messageSize == 0)
+				throw std::invalid_argument("Quasi-cyclic message size must be nonzero. " LOCATION);
+			if (codeSize <= messageSize)
+				throw std::invalid_argument("Quasi-cyclic code size must exceed its message size. " LOCATION);
+
+            // The quotient Phi_p(X) = (X^p - 1) / (X - 1) is irreducible
+            // over F_2 exactly when 2 is primitive modulo p. Merely choosing
+            // p prime can leave many small factors and enables reduced-ring
+            // attacks that the generic pseudo-distance estimate does not model.
+            //
+            // The strict inequality p > messageSize is equally important. It
+            // guarantees that at least one syndrome coordinate is truncated,
+            // removing the X - 1 component whose parity is otherwise a public
+            // linear distinguisher for regular noise (AUD-205).
+            const auto primeModulus =
+                nextPrimeWithPrimitiveRootTwo(messageSize + 1);
+			const auto paritySize = codeSize - messageSize;
+			const auto scalerMinusOne = 1 + (paritySize - 1) / primeModulus;
+			const auto polyBlockSize = 1 + (primeModulus - 1) / 128;
+			if (scalerMinusOne > std::numeric_limits<u64>::max() / polyBlockSize)
+				throw std::invalid_argument("Quasi-cyclic polynomial dimensions overflow. " LOCATION);
+			const auto multiPolyBlockSize = scalerMinusOne * polyBlockSize;
+			if (multiPolyBlockSize > std::numeric_limits<u64>::max() / 128)
+				throw std::invalid_argument("Quasi-cyclic transpose dimensions overflow. " LOCATION);
+			if (polyBlockSize > std::numeric_limits<i64>::max() / 2)
+				throw std::invalid_argument("Quasi-cyclic polynomial exceeds the FFT interface. " LOCATION);
+
+            mMessageSize = messageSize;
+			mPrimeModulus = primeModulus;
+            mCodeSize = codeSize;
+            mSeed = seed;
+        }
+
+        static void bitShiftXor(span<block> dest, span<block> in, u8 bitShift)
+        {
+            if (bitShift > 127)
+                throw RTE_LOC;
+            if (u64(in.data()) % 16)
+                throw RTE_LOC;
+			if (dest.empty())
+				return;
+			if (in.empty())
+				throw std::invalid_argument("Shifted input must be nonempty. " LOCATION);
+
+            if (bitShift == 64)
+            {
+                u8* inPtr = ((u8*)in.data()) + sizeof(u64);
+
+                auto end = std::min<u64>(dest.size(), in.size() - 1);
+                for (u64 i = 0; i < end; ++i, inPtr += sizeof(block))
+                    dest[i] = dest[i] ^ toBlock(inPtr);
+
+                if (end != static_cast<u64>(dest.size()))
+                {
+                    u64 b0;
+                    memcpy(&b0, inPtr, sizeof(b0));
+
+                    u64 d;
+                    memcpy(&d, dest[end].data(), sizeof(d));
+                    d ^= b0;
+                    memcpy(dest[end].data(), &d, sizeof(d));
+                }
+            }
+            else if (bitShift > 64)
+            {
+                bitShift -= 64;
+                const int bitShift2 = 64 - bitShift;
+                u8* inPtr = ((u8*)in.data()) + sizeof(u64);
+
+                auto end = std::min<u64>(dest.size(), in.size() - 1);
+                for (u64 i = 0; i < end; ++i, inPtr += sizeof(block))
+                {
+                    block
+                        b0 = toBlock(inPtr),
+                        b1 = toBlock(inPtr + sizeof(u64));
+
+                    b0 = (b0 >> bitShift);
+                    b1 = (b1 << bitShift2);
+
+                    dest[i] = dest[i] ^ b0 ^ b1;
+                }
+
+                if (end != static_cast<u64>(dest.size()))
+                {
+                    u64 b0;
+                    memcpy(&b0, inPtr, sizeof(b0));
+                    b0 = (b0 >> bitShift);
+
+                    u64 d;
+                    memcpy(&d, dest[end].data(), sizeof(d));
+                    d ^= b0;
+                    memcpy(dest[end].data(), &d, sizeof(d));
+                }
+            }
+            else if (bitShift)
+            {
+                const int bitShift2 = 64 - bitShift;
+                u8* inPtr = (u8*)in.data();
+
+                auto end = std::min<u64>(dest.size(), in.size() - 1);
+                for (u64 i = 0; i < end; ++i, inPtr += sizeof(block))
+                {
+                    block
+                        b0 = toBlock(inPtr),
+                        b1 = toBlock(inPtr + sizeof(u64));
+
+                    b0 = (b0 >> bitShift);
+                    b1 = (b1 << bitShift2);
+
+                    //bv0.append((u8*)&b0, 128);
+                    //bv1.append((u8*)&b1, 128);
+
+                    dest[i] = dest[i] ^ b0 ^ b1;
+                }
+
+                if (end != static_cast<u64>(dest.size()))
+                {
+                    block b0 = toBlock(inPtr);
+                    b0 = (b0 >> bitShift);
+
+                    //bv0.append((u8*)&b0, 128);
+
+                    dest[end] = dest[end] ^ b0;
+
+                    u64 b1;
+                    memcpy(&b1, inPtr + sizeof(u64), sizeof(b1));
+                    b1 = (b1 << bitShift2);
+
+                    //bv1.append((u8*)&b1, 64);
+
+                    u64 d;
+                    memcpy(&d, dest[end].data(), sizeof(d));
+                    d ^= b1;
+                    memcpy(dest[end].data(), &d, sizeof(d));
+                }
+
+
+
+                //std::cout << " b0     " << bv0 << std::endl;
+                //std::cout << " b1     " << bv1 << std::endl;
+            }
+            else
+            {
+                auto end = std::min<u64>(dest.size(), in.size());
+                for (u64 i = 0; i < end; ++i)
+                {
+                    dest[i] = dest[i] ^ in[i];
+                }
+            }
+        }
+
+        static void modp(span<block> dest, span<block> in, u64 p)
+        {
+			if (p == 0)
+				throw std::invalid_argument("Polynomial modulus must be nonzero. " LOCATION);
+			if (in.size() > std::numeric_limits<u64>::max() / 128)
+				throw std::invalid_argument("Polynomial input bit length overflows. " LOCATION);
+			if (dest.size() > std::numeric_limits<u64>::max() / sizeof(block))
+				throw std::invalid_argument("Polynomial output byte length overflows. " LOCATION);
+
+			const auto pBlocks = 1 + (p - 1) / 128;
+			const auto pBytes = 1 + (p - 1) / 8;
+
+            if (static_cast<u64>(dest.size()) < pBlocks)
+                throw RTE_LOC;
+
+            if (static_cast<u64>(in.size()) < pBlocks)
+                throw RTE_LOC;
+
+			const auto inputBits = in.size() * 128;
+			const auto count = 1 + (inputBits - 1) / p;
+
+            memcpy(dest.data(), in.data(), pBytes);
+
+            for (u64 i = 1; i < count; ++i)
+            {
+                auto begin = i * p;
+				auto end = begin + std::min<u64>(p, inputBits - begin);
+
+                auto shift = begin & 127;
+                auto beginBlock = in.data() + (begin / 128);
+				auto endBlock = in.data() + end / 128 + (end % 128 != 0);
+
+                if (endBlock > in.data() + in.size())
+                    throw RTE_LOC;
+
+
+                auto in_i = span<block>(beginBlock, endBlock);
+
+                bitShiftXor(dest, in_i, static_cast<u8>(shift));
+            }
+
+
+            auto offset = (p & 7);
+            if (offset)
+            {
+                u8 mask = (1 << offset) - 1;
+                auto idx = p / 8;
+                ((u8*)dest.data())[idx] &= mask;
+            }
+
+            auto rem = dest.size() * 16 - pBytes;
+            if (rem)
+                memset(((u8*)dest.data()) + pBytes, 0, rem);
+        }
+
+        void dualEncode(span<u8> X)
+        {
+            std::vector<block> XX(X.size());
+            for (auto i : rng(X.size()))
+            {
+                if (X[i] > 1)
+                    throw RTE_LOC;
+
+                XX[i] = block(X[i], X[i]);
+            }
+            dualEncode(XX);
+            for (auto i : rng(X.size()))
+            {
+                X[i] = XX[i] == ZeroBlock ? 0 : 1;
+            }
+        }
+
+        inline void transpose(span<block> s, MatrixView<block> r)
+        {
+            MatrixView<u8> ss((u8*)s.data(), s.size(), sizeof(block));
+
+            auto colLen = r.cols() * sizeof(block);
+            if (colLen < r.size() / 8)
+                throw RTE_LOC;
+
+            MatrixView<u8> rr((u8*)r.data(), r.rows(), colLen);
+            ::oc::transpose(ss, rr);
+        }
+
+
+        void dualEncode(span<block> X)
+        {
+            if (X.size() != size())
+                throw RTE_LOC;
+            const u64 rows(128);
+
+            //auto scaler = divCeil(mCodeSize, mPrimeModulus);
+            auto remSize = X.size() - mMessageSize;
+            auto scalerMinusOne = divCeil(remSize, mPrimeModulus);
+
+            // the number of blocks required to represent a single poly
+            auto polyBlockSize = divCeil(mPrimeModulus, 128);
+
+            // the number of blocks required to represent scalerMinusOne poly's
+            auto multiPolyBlockSize = polyBlockSize * scalerMinusOne;
+
+            // Pack each polynomial at a p-coordinate boundary before the bit
+            // transpose. Packing the complete parity span at once would place
+            // successive polynomials at 128*ceil(p/128) boundaries instead,
+            // folding the padding columns into the preceding polynomial and
+            // creating duplicate matrix rows (AUD-208).
+            Matrix<block> XT(rows, multiPolyBlockSize, AllocType::Uninitialized);
+            AlignedArray<block, 128> transposeBuffer;
+            auto parity = X.subspan(mMessageSize);
+            for (u64 s = 0; s < scalerMinusOne; ++s)
+            {
+                const auto polyBegin = s * mPrimeModulus;
+                const auto polySize = std::min<u64>(
+                    mPrimeModulus, parity.size() - polyBegin);
+                const auto usedBlocks = divCeil(polySize, u64{ 128 });
+                const auto outputBegin = s * polyBlockSize;
+
+                for (u64 b = 0; b < usedBlocks; ++b)
+                {
+                    const auto inputBegin = polyBegin + b * 128;
+                    const auto count = std::min<u64>(
+                        128, polySize - b * 128);
+                    std::memcpy(transposeBuffer.data(),
+                        parity.data() + inputBegin, count * sizeof(block));
+                    if (count != 128)
+                        std::memset(transposeBuffer.data() + count, 0,
+                            (128 - count) * sizeof(block));
+
+                    transpose128(transposeBuffer.data());
+                    for (u64 row = 0; row < rows; ++row)
+                        XT(row, outputBegin + b) = transposeBuffer[row];
+                }
+
+                for (u64 row = 0; row < rows; ++row)
+                    for (u64 b = usedBlocks; b < polyBlockSize; ++b)
+                        XT(row, outputBegin + b) = ZeroBlock;
+            }
+
+            auto polyU64Size = i64(polyBlockSize * 2);
+
+            std::vector<FFTPoly> a(scalerMinusOne);
+
+            Matrix<block>cModP1(128, polyBlockSize, AllocType::Uninitialized);
+
+            FFTPoly bPoly;
+            FFTPoly cPoly;
+
+            AlignedUnVector<block> temp128(2 * polyBlockSize);
+            AlignedUnVector<u64> randomPoly(polyU64Size);
+
+            FFTPoly::DecodeCache cache;
+            for (u64 s = 0; s < scalerMinusOne; s += 1)
+            {
+                PRNG pubPrng(toBlock(s) ^ mSeed);
+                pubPrng.get(randomPoly.data(), randomPoly.size());
+                a[s].encode(randomPoly);
+            }
+
+            for (u64 i = 0; i < rows; i += 1)
+            {
+
+                for (u64 s = 0; s < scalerMinusOne; ++s)
+                {
+                    auto& aPoly = a[s];
+                    auto b = XT[i].subspan(s * polyBlockSize, polyBlockSize);
+
+                    bPoly.encode(b);
+
+                    if (s == 0)
+                    {
+                        cPoly.mult(aPoly, bPoly);
+                    }
+                    else
+                    {
+                        bPoly.multEq(aPoly);
+                        cPoly.addEq(bPoly);
+                    }
+                }
+
+                // decode c[i] and store it at t64Ptr
+                cPoly.decode(temp128, cache, true);
+
+                // reduce s[i] mod (x^p - 1) and store it at cModP1[i]
+                modp(cModP1[i], temp128, mPrimeModulus);
+            }
+
+            AlignedArray<block, 128> tpBuffer;
+            auto numBlocks = divCeil(mMessageSize, 128);
+            auto begin = 0 * numBlocks;
+            auto end = (1) * numBlocks;
+            for (u64 i = begin; i < end; ++i)
+            {
+                u64 j = i * tpBuffer.size();
+                auto min = std::min<u64>(tpBuffer.size(), mMessageSize - j);
+
+                for (u64 k = 0; k < tpBuffer.size(); ++k)
+                    tpBuffer[k] = cModP1(k, i);
+
+                transpose128(tpBuffer.data());
+
+                auto end2 = i * tpBuffer.size() + min;
+                for (u64 k = 0; j < end2; ++j, ++k)
+                    X[j] = X[j] ^ tpBuffer[k];
+            }
+
+        }
+
+
+        DenseMtx getMatrix()
+        {
+
+            DenseMtx mtx(mCodeSize, mMessageSize);
+
+            for (u64 i = 0; i < mCodeSize; ++i)
+            {
+                std::vector<block> in(mCodeSize);
+                in[i] = oc::AllOneBlock;
+
+                dualEncode(in);
+
+                for (u64 j = 0; j < mMessageSize; ++j)
+                {
+                    if (in[j] == oc::AllOneBlock)
+                    {
+                        mtx(i, j) = 1;
+                    }
+                    else if (in[j] == oc::ZeroBlock)
+                    {
+                    }
+                    else
+                        throw RTE_LOC;
+                }
+            }
+
+            return mtx;
+        }
+    };
+
+}
+
+#endif

@@ -1,0 +1,112 @@
+scheme,t,stage,mean_ms_per_signer
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign r1: commit, phi^gamma",54.8281
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign r2: open (e_i, s_i)",22.2397
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign r3: R_i, pd_i",19.5816
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign: BBS+ verify",5.9888
+"clkem-tbbs (3 rounds, CL-KEM)",2,"sign: combine",6.3554
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign r1: commit, phi^gamma",53.8714
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign r2: open (e_i, s_i)",44.0797
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign r3: R_i, pd_i",19.1399
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign: BBS+ verify",5.9125
+"clkem-tbbs (3 rounds, CL-KEM)",3,"sign: combine",6.2875
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign r1: commit, phi^gamma",54.3117
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign r2: open (e_i, s_i)",66.1373
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign r3: R_i, pd_i",19.3215
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign: BBS+ verify",5.9422
+"clkem-tbbs (3 rounds, CL-KEM)",4,"sign: combine",6.3304
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign r1: commit, phi^gamma",54.1539
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign r2: open (e_i, s_i)",88.5535
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign r3: R_i, pd_i",19.6711
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign: BBS+ verify",5.9361
+"clkem-tbbs (3 rounds, CL-KEM)",5,"sign: combine",6.3538
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign r1: commit, phi^gamma",54.3219
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign r2: open (e_i, s_i)",110.8623
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign r3: R_i, pd_i",19.8371
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign: BBS+ verify",5.9419
+"clkem-tbbs (3 rounds, CL-KEM)",6,"sign: combine",6.3813
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign r1: commit, phi^gamma",55.7373
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign r2: open (e_i, s_i)",135.0775
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign r3: R_i, pd_i",20.6979
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign: BBS+ verify",6.0092
+"clkem-tbbs (3 rounds, CL-KEM)",7,"sign: combine",6.5050
+"robot-bbs (2 rounds)",2,"sign output",93.0895
+"robot-bbs (2 rounds)",2,"sign r1",91.1249
+"robot-bbs (2 rounds)",2,"sign r2",185.9509
+"robot-bbs (2 rounds)",3,"sign output",133.0426
+"robot-bbs (2 rounds)",3,"sign r1",88.5395
+"robot-bbs (2 rounds)",3,"sign r2",246.6684
+"robot-bbs (2 rounds)",4,"sign output",176.8577
+"robot-bbs (2 rounds)",4,"sign r1",88.8103
+"robot-bbs (2 rounds)",4,"sign r2",309.9808
+"robot-bbs (2 rounds)",5,"sign output",220.1504
+"robot-bbs (2 rounds)",5,"sign r1",88.8846
+"robot-bbs (2 rounds)",5,"sign r2",370.7407
+"robot-bbs (2 rounds)",6,"sign output",263.3951
+"robot-bbs (2 rounds)",6,"sign r1",88.1196
+"robot-bbs (2 rounds)",6,"sign r2",431.6249
+"robot-bbs (2 rounds)",7,"sign output",310.2972
+"robot-bbs (2 rounds)",7,"sign r1",88.6901
+"robot-bbs (2 rounds)",7,"sign r2",496.3422
+"twopass-bbs (2 passes, 2 parties)",2,"sign output (verify, decrypt)",37.9258
+"twopass-bbs (2 passes, 2 parties)",2,"sign pass 1 (beta1)",0.0018
+"twopass-bbs (2 passes, 2 parties)",2,"sign pass 2 (VRF, C, D, R_CL-Lin)",40.9999
+"tx25-bbs (2 offline + 1 online)",2,"offline output",160.9288
+"tx25-bbs (2 offline + 1 online)",2,"offline r1",60.1561
+"tx25-bbs (2 offline + 1 online)",2,"offline r2",204.9194
+"tx25-bbs (2 offline + 1 online)",2,"online",3.1962
+"tx25-bbs (2 offline + 1 online)",2,"output",9.6884
+"tx25-bbs (2 offline + 1 online)",3,"offline output",269.6998
+"tx25-bbs (2 offline + 1 online)",3,"offline r1",60.2889
+"tx25-bbs (2 offline + 1 online)",3,"offline r2",286.9857
+"tx25-bbs (2 offline + 1 online)",3,"online",3.2018
+"tx25-bbs (2 offline + 1 online)",3,"output",9.9889
+"tx25-bbs (2 offline + 1 online)",4,"offline output",396.4562
+"tx25-bbs (2 offline + 1 online)",4,"offline r1",60.1041
+"tx25-bbs (2 offline + 1 online)",4,"offline r2",368.7927
+"tx25-bbs (2 offline + 1 online)",4,"online",3.2246
+"tx25-bbs (2 offline + 1 online)",4,"output",10.3772
+"tx25-bbs (2 offline + 1 online)",5,"offline output",544.2567
+"tx25-bbs (2 offline + 1 online)",5,"offline r1",60.4000
+"tx25-bbs (2 offline + 1 online)",5,"offline r2",451.5137
+"tx25-bbs (2 offline + 1 online)",5,"online",3.2597
+"tx25-bbs (2 offline + 1 online)",5,"output",10.7579
+"tx25-bbs (2 offline + 1 online)",6,"offline output",719.9411
+"tx25-bbs (2 offline + 1 online)",6,"offline r1",60.8938
+"tx25-bbs (2 offline + 1 online)",6,"offline r2",536.8660
+"tx25-bbs (2 offline + 1 online)",6,"online",3.2310
+"tx25-bbs (2 offline + 1 online)",6,"output",11.4286
+"tx25-bbs (2 offline + 1 online)",7,"offline output",897.2465
+"tx25-bbs (2 offline + 1 online)",7,"offline r1",60.9065
+"tx25-bbs (2 offline + 1 online)",7,"offline r2",617.8557
+"tx25-bbs (2 offline + 1 online)",7,"online",3.2352
+"tx25-bbs (2 offline + 1 online)",7,"output",11.5600
+"wmc24-bbs (4 rounds)",2,"sign output",85.5936
+"wmc24-bbs (4 rounds)",2,"sign r1",120.7652
+"wmc24-bbs (4 rounds)",2,"sign r2",251.3535
+"wmc24-bbs (4 rounds)",2,"sign r3",217.7621
+"wmc24-bbs (4 rounds)",2,"sign r4",89.3479
+"wmc24-bbs (4 rounds)",3,"sign output",127.6924
+"wmc24-bbs (4 rounds)",3,"sign r1",121.0521
+"wmc24-bbs (4 rounds)",3,"sign r2",325.4229
+"wmc24-bbs (4 rounds)",3,"sign r3",297.7150
+"wmc24-bbs (4 rounds)",3,"sign r4",108.4035
+"wmc24-bbs (4 rounds)",4,"sign output",170.1568
+"wmc24-bbs (4 rounds)",4,"sign r1",119.7888
+"wmc24-bbs (4 rounds)",4,"sign r2",398.8965
+"wmc24-bbs (4 rounds)",4,"sign r3",382.2160
+"wmc24-bbs (4 rounds)",4,"sign r4",127.7318
+"wmc24-bbs (4 rounds)",5,"sign output",212.3383
+"wmc24-bbs (4 rounds)",5,"sign r1",119.5621
+"wmc24-bbs (4 rounds)",5,"sign r2",470.4373
+"wmc24-bbs (4 rounds)",5,"sign r3",462.8867
+"wmc24-bbs (4 rounds)",5,"sign r4",146.0975
+"wmc24-bbs (4 rounds)",6,"sign output",257.4835
+"wmc24-bbs (4 rounds)",6,"sign r1",119.8170
+"wmc24-bbs (4 rounds)",6,"sign r2",547.2560
+"wmc24-bbs (4 rounds)",6,"sign r3",551.0212
+"wmc24-bbs (4 rounds)",6,"sign r4",166.6541
+"wmc24-bbs (4 rounds)",7,"sign output",302.8811
+"wmc24-bbs (4 rounds)",7,"sign r1",120.6753
+"wmc24-bbs (4 rounds)",7,"sign r2",624.1174
+"wmc24-bbs (4 rounds)",7,"sign r3",640.1737
+"wmc24-bbs (4 rounds)",7,"sign r4",185.8867

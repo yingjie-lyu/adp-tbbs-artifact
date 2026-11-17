@@ -1,0 +1,23 @@
+[package]
+name = "tbbs-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Signing-runtime driver for the threshold BBS+ schemes in this workspace"
+
+[[bin]]
+name = "tbbs-bench"
+path = "src/main.rs"
+
+[dependencies]
+bicycl = { path = "../bicycl" }
+threshold-bbs = { path = ".." }
+clkem-tbbs = { path = "../clkem-tbbs" }
+twopass-bbs = { path = "../twopass-bbs" }
+tcl = { path = "../tcl" }
+robot-bbs = { path = "../robot-bbs" }
+wmc24-bbs = { path = "../wmc24-bbs" }
+tx25-bbs = { path = "../tx25-bbs" }
+
+[dependencies.rand_core]
+version = "0.6"
+features = ["getrandom"]

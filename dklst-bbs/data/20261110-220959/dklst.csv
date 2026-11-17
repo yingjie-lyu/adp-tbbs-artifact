@@ -1,0 +1,13 @@
+backend,mul_variant,t,reps,mults_per_signer,sign_ms_per_signer,sign_bits_per_signer,setup_ms,setup_bits_per_party
+sl-oblivious,correction,2,10,2,12.696,607360,187.901,270336
+sl-oblivious,correction,3,10,4,14.904,1214720,545.034,811008
+sl-oblivious,correction,4,10,6,17.674,1822080,1088.236,1622016
+sl-oblivious,correction,5,10,8,20.449,2429440,1815.812,2703360
+sl-oblivious,correction,6,10,10,22.823,3036800,2732.300,4055040
+sl-oblivious,correction,7,10,12,25.241,3644160,3808.868,5677056
+libOTe,correction,2,10,2,10.132,609640,9.436,33888
+libOTe,correction,3,10,4,10.526,1219280,27.898,101664
+libOTe,correction,4,10,6,11.105,1828920,56.568,203328
+libOTe,correction,5,10,8,11.594,2438560,93.606,338880
+libOTe,correction,6,10,10,12.103,3048200,140.051,508320
+libOTe,correction,7,10,12,12.594,3657840,199.282,711648

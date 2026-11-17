@@ -1,0 +1,14 @@
+scheme,t,parties,mean_ms_per_signer
+"clkem-tbbs (3 rounds, CL-KEM)",2,2,98.8742
+"clkem-tbbs (3 rounds, CL-KEM)",3,3,119.3008
+"clkem-tbbs (3 rounds, CL-KEM)",4,4,139.7798
+"clkem-tbbs (3 rounds, CL-KEM)",5,5,160.4100
+"clkem-tbbs (3 rounds, CL-KEM)",6,6,180.0127
+"clkem-tbbs (3 rounds, CL-KEM)",7,7,200.3161
+"robot-bbs (2 rounds)",2,2,330.9881
+"robot-bbs (2 rounds)",3,3,430.2103
+"robot-bbs (2 rounds)",4,4,526.8472
+"robot-bbs (2 rounds)",5,5,621.1632
+"robot-bbs (2 rounds)",6,6,721.3459
+"robot-bbs (2 rounds)",7,7,817.9289
+"twopass-bbs (2 passes, 2 parties)",2,2,73.4864

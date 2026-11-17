@@ -1,0 +1,507 @@
+#include "tests_cryptoTools/Edwards25519_Tests.h"
+
+#include <cryptoTools/Common/TestCollection.h>
+#include <cryptoTools/Crypto/Blake2.h>
+#include <cryptoTools/Crypto/Edwards25519/Edwards25519.h>
+
+#include <array>
+#include <cstring>
+
+namespace
+{
+    bool isPrimeSubgroupPoint(const osuCrypto::u8 encoded[32])
+    {
+        // l = 2^252 + 27742317777372353535851937790883648493.
+        static const osuCrypto::u8 order[32] = {
+            0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+            0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
+        ge25519 point, multiple;
+        if (ge25519_unpack_vartime(&point, encoded) != 0)
+            return false;
+        ge25519_setneutral(&multiple);
+        for (int bit = 255; bit >= 0; --bit)
+        {
+            ge25519_double(&multiple, &multiple);
+            if ((order[bit >> 3] >> (bit & 7)) & 1)
+                ge25519_add(&multiple, &multiple, &point);
+        }
+        return ge25519_isneutral_vartime(&multiple) != 0;
+    }
+}
+
+namespace tests_cryptoTools
+{
+    void Edwards25519_8xBase_Test()
+    {
+        using namespace osuCrypto::Edwards25519;
+
+        std::array<Scalar, lanes> scalars;
+        std::array<std::array<osuCrypto::u8, encodedSize>, lanes> scalarBytes{};
+        for (std::size_t i = 0; i != scalars.size(); ++i)
+        {
+            scalarBytes[i][0] = static_cast<osuCrypto::u8>(i + 1);
+            scalarBytes[i][7] = static_cast<osuCrypto::u8>(17 * i);
+            scalars[i].fromBytes(scalarBytes[i].data());
+        }
+
+        const auto batch = Point8::mulGenerator(scalars);
+        std::array<osuCrypto::u8, lanes * encodedSize> batchPacked;
+        batch.toBytes(batchPacked.data());
+
+        for (std::size_t i = 0; i != scalars.size(); ++i)
+        {
+            const auto point = Point::mulGenerator(scalars[i]);
+            std::array<osuCrypto::u8, encodedSize> packed;
+            point.toBytes(packed.data());
+            if (std::memcmp(packed.data(), batchPacked.data() + encodedSize * i,
+                            packed.size()))
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane Edwards25519 base multiplication mismatch");
+
+            const auto doubled = point + point;
+            std::array<osuCrypto::u8, encodedSize> doubledPacked, sumPacked;
+            doubled.toBytes(doubledPacked.data());
+            point.doubled().toBytes(sumPacked.data());
+            if (doubledPacked != sumPacked)
+                throw osuCrypto::UnitTestFail("Edwards25519 add/double mismatch");
+        }
+
+        const auto products = batch.mul(scalars);
+        std::array<osuCrypto::u8, lanes * encodedSize> productsPacked;
+        products.toBytes(productsPacked.data());
+        for (std::size_t i = 0; i != lanes; ++i)
+        {
+            std::array<osuCrypto::u8, encodedSize> expectedProduct;
+            Point::mulGenerator(scalars[i]).mul(scalars[i])
+                .toBytes(expectedProduct.data());
+            if (std::memcmp(
+                    expectedProduct.data(),
+                    productsPacked.data() + i * encodedSize,
+                    encodedSize) != 0)
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane Edwards25519 scalar multiplication mismatch");
+        }
+
+        const auto sharedScalarProducts = batch.mul(scalars[3]);
+        sharedScalarProducts.toBytes(productsPacked.data());
+        for (std::size_t i = 0; i != lanes; ++i)
+        {
+            std::array<osuCrypto::u8, encodedSize> expectedProduct;
+            Point::mulGenerator(scalars[i]).mul(scalars[3])
+                .toBytes(expectedProduct.data());
+            if (std::memcmp(
+                    expectedProduct.data(),
+                    productsPacked.data() + i * encodedSize,
+                    encodedSize) != 0)
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane Edwards25519 shared-scalar multiplication mismatch");
+        }
+
+        Point8 selected;
+        const std::array<osuCrypto::u8, lanes> select = {
+            0, 1, 0, 1, 1, 0, 1, 0};
+        selected.conditionalMove(batch, select);
+        std::array<osuCrypto::u8, lanes * encodedSize> selectedPacked;
+        selected.toBytes(selectedPacked.data());
+        std::array<osuCrypto::u8, encodedSize> neutralPacked;
+        Point{}.toBytes(neutralPacked.data());
+        for (std::size_t i = 0; i != lanes; ++i)
+        {
+            const auto* expectedLane = select[i] ?
+                batchPacked.data() + i * encodedSize : neutralPacked.data();
+            if (std::memcmp(
+                    expectedLane, selectedPacked.data() + i * encodedSize,
+                    encodedSize) != 0)
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane Edwards25519 conditional move mismatch");
+        }
+
+        std::array<osuCrypto::u8, encodedSize> vectorInput{};
+        for (std::size_t i = 0; i != vectorInput.size(); ++i)
+            vectorInput[i] = static_cast<osuCrypto::u8>(13 * i + i * i);
+        Scalar vectorScalar(vectorInput.data());
+        std::array<osuCrypto::u8, encodedSize> vectorOutput;
+        Point::mulGenerator(vectorScalar).toBytes(vectorOutput.data());
+        const std::array<osuCrypto::u8, encodedSize> expected = {
+            0x70, 0x72, 0x2e, 0x3d, 0xff, 0x9e, 0x15, 0x0e,
+            0xf3, 0x73, 0x33, 0xe5, 0xda, 0x79, 0x9b, 0xf3,
+            0x1e, 0x64, 0x81, 0x92, 0x2d, 0x61, 0xf4, 0x43,
+            0x50, 0x27, 0x01, 0x05, 0x0c, 0x92, 0xb0, 0x56};
+        if (vectorOutput != expected)
+            throw osuCrypto::UnitTestFail("Edwards25519 known-answer mismatch");
+
+        const auto broadcast = Point8::broadcast(Point::mulGenerator(vectorScalar));
+        std::array<osuCrypto::u8, lanes * encodedSize> broadcastPacked;
+        broadcast.toBytes(broadcastPacked.data());
+        for (std::size_t i = 0; i != lanes; ++i)
+            if (std::memcmp(broadcastPacked.data() + i * encodedSize,
+                            expected.data(), expected.size()))
+                throw osuCrypto::UnitTestFail("Edwards25519 broadcast mismatch");
+
+        const FixedPointTable fixedTable(Point::mulGenerator(vectorScalar));
+        fixedTable.mul(scalars).toBytes(selectedPacked.data());
+        broadcast.mul(scalars).toBytes(productsPacked.data());
+        if (selectedPacked != productsPacked)
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 fixed-point table multiplication mismatch");
+
+        Point8 unpacked;
+        if (!unpacked.fromBytes(batchPacked.data()))
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 point failed to unpack");
+
+        std::array<osuCrypto::u8, lanes * encodedSize> repacked;
+        unpacked.toBytes(repacked.data());
+        if (repacked != batchPacked)
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 pack/unpack mismatch");
+
+        const auto clearedBatch = batch.clearCofactor();
+        auto expectedClearedBatch = batch.doubled();
+        expectedClearedBatch = expectedClearedBatch.doubled();
+        expectedClearedBatch = expectedClearedBatch.doubled();
+        clearedBatch.toBytes(repacked.data());
+        expectedClearedBatch.toBytes(selectedPacked.data());
+        if (repacked != selectedPacked)
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 cofactor clearing mismatch");
+
+        // This point round-tripped through the assembly decoder but its
+        // negated x coordinate exceeded the bounds required by doubling.
+        // Check arithmetic after decoding, including both signs in every lane.
+        const std::array<osuCrypto::u8, encodedSize> decodingRegression = {
+            0xc9, 0x9a, 0xfa, 0x1c, 0x72, 0x41, 0x33, 0x89,
+            0x09, 0x65, 0x22, 0xc8, 0x43, 0xd0, 0xc4, 0x4d,
+            0x44, 0x8e, 0x1d, 0xb8, 0x40, 0x84, 0xec, 0x2e,
+            0x9d, 0x21, 0x21, 0xa4, 0x6e, 0xaa, 0xf6, 0x8f};
+        for (unsigned sign = 0; sign != 2; ++sign)
+        {
+            auto input = decodingRegression;
+            input.back() = (input.back() & 0x7f) | (sign << 7);
+            Point scalarPoint;
+            if (!scalarPoint.fromBytes(input.data()))
+                throw osuCrypto::UnitTestFail("scalar decoding regression failed");
+            std::array<osuCrypto::u8, encodedSize> expectedCleared;
+            scalarPoint.clearCofactor().toBytes(expectedCleared.data());
+            std::array<osuCrypto::u8, lanes * encodedSize> inputs, actual;
+            for (std::size_t lane = 0; lane != lanes; ++lane)
+                std::memcpy(inputs.data() + lane * encodedSize,
+                            input.data(), encodedSize);
+            Point8 decoded;
+            if (!decoded.fromBytes(inputs.data()))
+                throw osuCrypto::UnitTestFail("batch decoding regression failed");
+            decoded.clearCofactor().toBytes(actual.data());
+            for (std::size_t lane = 0; lane != lanes; ++lane)
+                if (std::memcmp(actual.data() + lane * encodedSize,
+                                expectedCleared.data(), encodedSize))
+                    throw osuCrypto::UnitTestFail(
+                        "Edwards25519 arithmetic after decoding mismatch");
+        }
+
+        Point invalidPoint;
+        std::array<osuCrypto::u8, encodedSize> nonCanonicalField;
+        nonCanonicalField.fill(0xff);
+        if (invalidPoint.fromBytes(nonCanonicalField.data()))
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 accepted a non-canonical field encoding");
+
+        std::array<osuCrypto::u8, encodedSize> nonCanonicalEquivalent;
+        nonCanonicalEquivalent.fill(0xff);
+        nonCanonicalEquivalent[0] = 0xee;
+        nonCanonicalEquivalent[31] = 0x7f;
+        if (invalidPoint.fromBytes(nonCanonicalEquivalent.data()))
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 accepted a reducible field encoding");
+
+        std::array<osuCrypto::u8, encodedSize> nonCanonicalSign{};
+        nonCanonicalSign[0] = 1;
+        nonCanonicalSign[31] = 0x80;
+        if (invalidPoint.fromBytes(nonCanonicalSign.data()))
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 accepted a non-canonical zero-x sign");
+
+        auto invalidBatch = batchPacked;
+        std::memcpy(invalidBatch.data() + encodedSize,
+                    nonCanonicalField.data(), encodedSize);
+        if (unpacked.fromBytes(invalidBatch.data()))
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 accepted a non-canonical lane");
+
+        invalidBatch = batchPacked;
+        std::memcpy(invalidBatch.data() + 2 * encodedSize,
+                    nonCanonicalEquivalent.data(), encodedSize);
+        if (unpacked.fromBytes(invalidBatch.data()))
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 accepted a reducible lane");
+
+        invalidBatch = batchPacked;
+        std::memcpy(invalidBatch.data() + 3 * encodedSize,
+                    nonCanonicalSign.data(), encodedSize);
+        if (unpacked.fromBytes(invalidBatch.data()))
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 accepted a zero-x sign bit");
+
+        // A failed decode must not leave a partially updated batch. Put a
+        // canonical, off-curve encoding in the second four-lane block so the
+        // first block has already decoded before the failure is observed.
+        std::array<osuCrypto::u8, encodedSize> offCurve{};
+        Point probe;
+        for (osuCrypto::u64 candidate = 2;; ++candidate)
+        {
+            offCurve.fill(0);
+            for (std::size_t i = 0; i != sizeof(candidate); ++i)
+                offCurve[i] = static_cast<osuCrypto::u8>(candidate >> (8 * i));
+            if (!probe.fromBytes(offCurve.data()))
+                break;
+        }
+        invalidBatch = batchPacked;
+        std::memcpy(invalidBatch.data() + 6 * encodedSize,
+                    offCurve.data(), encodedSize);
+        if (unpacked.fromBytes(invalidBatch.data()))
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 accepted an off-curve lane");
+        unpacked.toBytes(repacked.data());
+        if (repacked != batchPacked)
+            throw osuCrypto::UnitTestFail(
+                "failed Edwards25519 batch decode changed the destination");
+
+        Point preserved = Point::mulGenerator(scalars[0]);
+        std::array<osuCrypto::u8, encodedSize> preservedBefore, preservedAfter;
+        preserved.toBytes(preservedBefore.data());
+        if (preserved.fromBytes(offCurve.data()))
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 accepted an off-curve point");
+        preserved.toBytes(preservedAfter.data());
+        if (preservedBefore != preservedAfter)
+            throw osuCrypto::UnitTestFail(
+                "failed Edwards25519 decode changed the destination");
+
+        std::array<osuCrypto::u8, encodedSize> orderTwo;
+        orderTwo.fill(0xff);
+        orderTwo[0] = 0xec;
+        orderTwo[31] = 0x7f;
+        Point torsion;
+        if (!torsion.fromBytes(orderTwo.data()) ||
+            !torsion.clearCofactor().isNeutral())
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 cofactor clearing did not remove torsion");
+
+        // Deterministic randomized differential coverage for the fixed-width
+        // backend. This is intentionally modest enough for every CI backend.
+        osuCrypto::u64 state = 0x6a09e667f3bcc909ULL;
+        for (std::size_t iteration = 0; iteration != 32; ++iteration)
+        {
+            std::array<Scalar, lanes> randomScalars;
+            for (std::size_t lane = 0; lane != lanes; ++lane)
+            {
+                std::array<osuCrypto::u8, encodedSize> bytes;
+                for (auto& byte : bytes)
+                {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    byte = static_cast<osuCrypto::u8>(state);
+                }
+                randomScalars[lane].fromBytes(bytes.data());
+            }
+
+            const auto randomBatch = Point8::mulGenerator(randomScalars);
+            randomBatch.toBytes(repacked.data());
+            for (std::size_t lane = 0; lane != lanes; ++lane)
+            {
+                Point::mulGenerator(randomScalars[lane])
+                    .toBytes(preservedAfter.data());
+                if (std::memcmp(
+                        preservedAfter.data(),
+                        repacked.data() + lane * encodedSize,
+                        encodedSize) != 0)
+                    throw osuCrypto::UnitTestFail(
+                        "randomized Edwards25519 batch differential mismatch");
+            }
+        }
+
+#ifndef CRYPTOTOOLS_EDWARDS25519_IFMA
+        constexpr std::size_t backendLanes = 4;
+        std::array<sc25519, backendLanes> rawScalars;
+        for (std::size_t i = 0; i != backendLanes; ++i)
+            sc25519_from32bytes(&rawScalars[i], scalarBytes[i].data());
+        ge4x rawBase, directProduct, tableProduct;
+        ge4x_scalarsmults_base(&rawBase, rawScalars.data());
+        ge4x_scalarsmults(&directProduct, &rawBase, rawScalars.data());
+        alignas(32) static ge4x table[64][8];
+        ge4x_maketable(table, &rawBase, 1);
+        ge4x_scalarsmults_table(
+            &tableProduct, table, rawScalars.data(), 1);
+        std::array<osuCrypto::u8, backendLanes * encodedSize> directPacked, tablePacked;
+        ge4x_pack(directPacked.data(), &directProduct);
+        ge4x_pack(tablePacked.data(), &tableProduct);
+        if (directPacked != tablePacked)
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 precomputed table multiplication mismatch");
+#endif
+    }
+
+    void Edwards25519_HashToCurve_Test()
+    {
+        using namespace osuCrypto::Edwards25519;
+
+        static const osuCrypto::u8 hashMessage[] = {'a', 'b', 'c'};
+        static const osuCrypto::u8 hashDomain[] = "unit-test";
+        const auto hashPoint = Point::hashToCurveElligator2(
+            hashMessage, sizeof(hashMessage), hashDomain, sizeof(hashDomain) - 1);
+        std::array<osuCrypto::u8, encodedSize> hashPointPacked;
+        hashPoint.toBytes(hashPointPacked.data());
+        const std::array<osuCrypto::u8, encodedSize> expectedHashPoint = {
+            0xa6, 0x7e, 0x69, 0xe3, 0x60, 0xc2, 0x24, 0x99,
+            0xaa, 0xc3, 0xb5, 0x19, 0x4a, 0x75, 0xa1, 0xf5,
+            0x2b, 0xde, 0x47, 0x23, 0xc1, 0x31, 0xb7, 0x32,
+            0x82, 0x6c, 0x06, 0xd3, 0x58, 0x33, 0x75, 0xc7};
+        if (hashPointPacked != expectedHashPoint || hashPoint.isNeutral() ||
+            !isPrimeSubgroupPoint(hashPointPacked.data()))
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 BLAKE2b Elligator2 known-answer mismatch");
+
+        Point decodedHashPoint;
+        if (!decodedHashPoint.fromBytes(hashPointPacked.data()))
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 Elligator2 output is not a valid point");
+
+        osuCrypto::Blake2 canonicalHash(32), encodedHash(32);
+        std::array<osuCrypto::u8, 32> canonicalDigest, encodedDigest;
+        canonicalHash.Update(hashPoint);
+        canonicalHash.Final(canonicalDigest.data());
+        encodedHash.Update(hashPointPacked.data(), hashPointPacked.size());
+        encodedHash.Final(encodedDigest.data());
+        if (canonicalDigest != encodedDigest)
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 Hashable encoding is not canonical");
+
+        static const osuCrypto::u8 otherDomain[] = "other-test";
+        std::array<osuCrypto::u8, encodedSize> otherDomainPoint;
+        Point::hashToCurveElligator2(
+            hashMessage, sizeof(hashMessage), otherDomain,
+            sizeof(otherDomain) - 1).toBytes(otherDomainPoint.data());
+        if (otherDomainPoint == hashPointPacked)
+            throw osuCrypto::UnitTestFail(
+                "Edwards25519 Elligator2 domain separation failed");
+
+        constexpr std::size_t batchMessageSize = 3;
+        const std::array<osuCrypto::u8, lanes * batchMessageSize> batchMessages = {
+            'a', 'b', 'c',
+            0x00, 0x01, 0x02,
+            0xff, 0x80, 0x40,
+            'x', 'y', 'z',
+            0x10, 0x20, 0x30,
+            'm', 'a', 'p',
+            0x7f, 0x00, 0xfe,
+            'o', 't', 'e'};
+        const auto batchHashPoint = Point8::hashToCurveElligator2(
+            batchMessages.data(), batchMessageSize,
+            hashDomain, sizeof(hashDomain) - 1);
+        std::array<osuCrypto::u8, lanes * encodedSize> batchHashPacked;
+        batchHashPoint.toBytes(batchHashPacked.data());
+        for (std::size_t lane = 0; lane != lanes; ++lane)
+        {
+            const auto scalarHashPoint = Point::hashToCurveElligator2(
+                batchMessages.data() + lane * batchMessageSize,
+                batchMessageSize, hashDomain, sizeof(hashDomain) - 1);
+            std::array<osuCrypto::u8, encodedSize> scalarHashPacked;
+            scalarHashPoint.toBytes(scalarHashPacked.data());
+            if (std::memcmp(
+                    scalarHashPacked.data(),
+                    batchHashPacked.data() + lane * encodedSize,
+                    encodedSize) != 0 ||
+                !isPrimeSubgroupPoint(
+                    batchHashPacked.data() + lane * encodedSize))
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane Edwards25519 Elligator2 mismatch");
+        }
+
+        osuCrypto::Blake2 canonicalBatchHash(32), encodedBatchHash(32);
+        canonicalBatchHash.Update(batchHashPoint);
+        canonicalBatchHash.Final(canonicalDigest.data());
+        encodedBatchHash.Update(
+            batchHashPacked.data(), batchHashPacked.size());
+        encodedBatchHash.Final(encodedDigest.data());
+        if (canonicalDigest != encodedDigest)
+            throw osuCrypto::UnitTestFail(
+                "eight-lane Edwards25519 Hashable encoding is not canonical");
+
+        std::array<osuCrypto::u8, lanes * encodedSize> emptyBatchPacked;
+        Point8::hashToCurveElligator2(
+            nullptr, 0, hashDomain, sizeof(hashDomain) - 1)
+            .toBytes(emptyBatchPacked.data());
+        std::array<osuCrypto::u8, encodedSize> emptyScalarPacked;
+        Point::hashToCurveElligator2(
+            nullptr, 0, hashDomain, sizeof(hashDomain) - 1)
+            .toBytes(emptyScalarPacked.data());
+        for (std::size_t lane = 0; lane != lanes; ++lane)
+            if (std::memcmp(
+                    emptyBatchPacked.data() + lane * encodedSize,
+                    emptyScalarPacked.data(), encodedSize) != 0)
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane empty-message Elligator2 mismatch");
+
+        constexpr std::size_t variedMessageSize = 17;
+        std::array<osuCrypto::u8, lanes * variedMessageSize> variedMessages;
+        for (std::size_t batch = 0; batch != 8; ++batch)
+        {
+            for (std::size_t i = 0; i != variedMessages.size(); ++i)
+                variedMessages[i] = static_cast<osuCrypto::u8>(
+                    29 * batch + 17 * i + i * i);
+            Point8::hashToCurveElligator2(
+                variedMessages.data(), variedMessageSize,
+                hashDomain, sizeof(hashDomain) - 1)
+                .toBytes(batchHashPacked.data());
+            for (std::size_t lane = 0; lane != lanes; ++lane)
+            {
+                Point::hashToCurveElligator2(
+                    variedMessages.data() + lane * variedMessageSize,
+                    variedMessageSize, hashDomain, sizeof(hashDomain) - 1)
+                    .toBytes(emptyScalarPacked.data());
+                if (std::memcmp(
+                        batchHashPacked.data() + lane * encodedSize,
+                        emptyScalarPacked.data(), encodedSize) != 0)
+                    throw osuCrypto::UnitTestFail(
+                        "eight-lane varied-input Elligator2 mismatch");
+            }
+        }
+
+        // This input used to produce an invalid lane in the four-wide
+        // floating-radix backend because field negation left negative limbs
+        // outside the bounds required by later multiplications.
+        static const std::array<osuCrypto::u8, encodedSize> regressionMessage = {
+            0x04, 0x03, 0xf9, 0x3d, 0xfd, 0xd5, 0xf6, 0xfe,
+            0xf8, 0x69, 0x66, 0xd8, 0x33, 0x92, 0x84, 0x9c,
+            0x52, 0x0a, 0xe0, 0x2e, 0x91, 0xa5, 0xaa, 0xed,
+            0xd2, 0x01, 0x0c, 0x7d, 0xbc, 0x6c, 0x45, 0xe8};
+        static const osuCrypto::u8 regressionDomain[] =
+            "libOTe-MasnyRindal-v1";
+        std::array<osuCrypto::u8, lanes * encodedSize> regressionMessages;
+        for (std::size_t lane = 0; lane != lanes; ++lane)
+            std::memcpy(
+                regressionMessages.data() + lane * encodedSize,
+                regressionMessage.data(), regressionMessage.size());
+
+        Point8::hashToCurveElligator2(
+            regressionMessages.data(), encodedSize,
+            regressionDomain, sizeof(regressionDomain) - 1)
+            .toBytes(batchHashPacked.data());
+        Point::hashToCurveElligator2(
+            regressionMessage.data(), regressionMessage.size(),
+            regressionDomain, sizeof(regressionDomain) - 1)
+            .toBytes(emptyScalarPacked.data());
+        for (std::size_t lane = 0; lane != lanes; ++lane)
+        {
+            Point decodedRegression;
+            const auto* encoded =
+                batchHashPacked.data() + lane * encodedSize;
+            if (!decodedRegression.fromBytes(encoded) ||
+                std::memcmp(encoded, emptyScalarPacked.data(), encodedSize) != 0)
+                throw osuCrypto::UnitTestFail(
+                    "eight-lane Elligator2 negation regression");
+        }
+    }
+}

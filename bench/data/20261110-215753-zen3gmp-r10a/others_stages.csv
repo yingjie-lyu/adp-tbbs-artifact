@@ -1,0 +1,41 @@
+scheme,t,stage,mean_ms_per_signer
+"tx25-bbs (2 offline + 1 online)",2,"offline output",150.0792
+"tx25-bbs (2 offline + 1 online)",2,"offline r1",55.6026
+"tx25-bbs (2 offline + 1 online)",2,"offline r2",189.8011
+"tx25-bbs (2 offline + 1 online)",2,"online",3.1716
+"tx25-bbs (2 offline + 1 online)",2,"output",9.8533
+"tx25-bbs (2 offline + 1 online)",3,"offline output",251.0655
+"tx25-bbs (2 offline + 1 online)",3,"offline r1",55.6842
+"tx25-bbs (2 offline + 1 online)",3,"offline r2",265.5974
+"tx25-bbs (2 offline + 1 online)",3,"online",3.1810
+"tx25-bbs (2 offline + 1 online)",3,"output",10.1895
+"tx25-bbs (2 offline + 1 online)",4,"offline output",365.0074
+"tx25-bbs (2 offline + 1 online)",4,"offline r1",55.1883
+"tx25-bbs (2 offline + 1 online)",4,"offline r2",338.1206
+"tx25-bbs (2 offline + 1 online)",4,"online",3.1610
+"tx25-bbs (2 offline + 1 online)",4,"output",10.4133
+"tx25-bbs (2 offline + 1 online)",5,"offline output",499.7545
+"tx25-bbs (2 offline + 1 online)",5,"offline r1",55.1951
+"tx25-bbs (2 offline + 1 online)",5,"offline r2",413.3175
+"tx25-bbs (2 offline + 1 online)",5,"online",3.1850
+"tx25-bbs (2 offline + 1 online)",5,"output",10.8125
+"wmc24-bbs (4 rounds)",2,"sign output",77.0141
+"wmc24-bbs (4 rounds)",2,"sign r1",109.3946
+"wmc24-bbs (4 rounds)",2,"sign r2",225.7353
+"wmc24-bbs (4 rounds)",2,"sign r3",195.4259
+"wmc24-bbs (4 rounds)",2,"sign r4",81.1857
+"wmc24-bbs (4 rounds)",3,"sign output",116.3575
+"wmc24-bbs (4 rounds)",3,"sign r1",110.5172
+"wmc24-bbs (4 rounds)",3,"sign r2",296.0412
+"wmc24-bbs (4 rounds)",3,"sign r3",271.6097
+"wmc24-bbs (4 rounds)",3,"sign r4",98.9676
+"wmc24-bbs (4 rounds)",4,"sign output",156.7351
+"wmc24-bbs (4 rounds)",4,"sign r1",110.9394
+"wmc24-bbs (4 rounds)",4,"sign r2",367.0120
+"wmc24-bbs (4 rounds)",4,"sign r3",348.5933
+"wmc24-bbs (4 rounds)",4,"sign r4",117.4756
+"wmc24-bbs (4 rounds)",5,"sign output",196.5479
+"wmc24-bbs (4 rounds)",5,"sign r1",110.2208
+"wmc24-bbs (4 rounds)",5,"sign r2",434.1177
+"wmc24-bbs (4 rounds)",5,"sign r3",425.8518
+"wmc24-bbs (4 rounds)",5,"sign r4",134.7958

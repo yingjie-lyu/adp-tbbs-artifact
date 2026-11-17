@@ -1,0 +1,49 @@
+stage,t,mean_ms_per_signer
+"1. generating presigning message",2,26.5639
+"2. generating presigning proof",2,32.2001
+"3. verifying each peer's presigning proof",2,37.3693
+"4. NIM decoding with each peer",2,32.2222
+"5. finalizing online signing message",2,5.5133
+"6. signature combination",2,3.1230
+"total (six stages)",2,136.9919,1.0403
+"wire encode/decode (separate run)",2,0.7228,0.0225
+"1. generating presigning message",3,26.5907
+"2. generating presigning proof",3,32.2687
+"3. verifying each peer's presigning proof",3,74.2763
+"4. NIM decoding with each peer",3,64.6889
+"5. finalizing online signing message",3,5.4828
+"6. signature combination",3,2.0838
+"total (six stages)",3,205.3911,1.7534
+"wire encode/decode (separate run)",3,0.9719,0.0173
+"1. generating presigning message",4,26.7901
+"2. generating presigning proof",4,32.4316
+"3. verifying each peer's presigning proof",4,110.7414
+"4. NIM decoding with each peer",4,96.6033
+"5. finalizing online signing message",4,5.5858
+"6. signature combination",4,1.5676
+"total (six stages)",4,273.7197,0.7983
+"wire encode/decode (separate run)",4,1.2189,0.0151
+"1. generating presigning message",5,26.5055
+"2. generating presigning proof",5,32.1091
+"3. verifying each peer's presigning proof",5,146.7099
+"4. NIM decoding with each peer",5,127.7543
+"5. finalizing online signing message",5,5.8275
+"6. signature combination",5,1.2396
+"total (six stages)",5,340.1460,0.5281
+"wire encode/decode (separate run)",5,1.4587,0.0085
+"1. generating presigning message",6,26.4779
+"2. generating presigning proof",6,32.2407
+"3. verifying each peer's presigning proof",6,184.3531
+"4. NIM decoding with each peer",6,160.2345
+"5. finalizing online signing message",6,6.1858
+"6. signature combination",6,1.0360
+"total (six stages)",6,410.5281,2.0537
+"wire encode/decode (separate run)",6,1.7241,0.0242
+"1. generating presigning message",7,26.6729
+"2. generating presigning proof",7,32.3581
+"3. verifying each peer's presigning proof",7,221.8314
+"4. NIM decoding with each peer",7,192.7357
+"5. finalizing online signing message",7,6.5439
+"6. signature combination",7,0.8844
+"total (six stages)",7,481.0264,0.8996
+"wire encode/decode (separate run)",7,1.9851,0.0296

@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [master, stage, stationaryOt, newAes, dmpf, cpp20]
+  pull_request:
+    branches: [master, stage, newAes]
+  workflow_dispatch:
+
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Build libOTe
+        run: python3 build.py --par=4 -DENABLE_ALL_OT=ON -DENABLE_BITPOLYMUL=ON -DENABLE_CIRCUITS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_ASAN=ON -DENABLE_MOCK_OT=ON
+
+      - name: Unit tests
+        run: ./out/build/linux/frontend/frontend_libOTe -u
+
+      - name: Find source tree
+        working-directory: libOTe_Tests/cmakeTests
+        run: |
+          cmake -S . -B out/ -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=../../
+          cmake --build out/
+          ./out/main
+          rm -rf out/
+
+      - name: Hint test
+        working-directory: libOTe_Tests/cmakeTests
+        run: |
+          cmake -S . -B out/ -DLIBOTE_HINT=../..
+          cmake --build out/
+          ./out/main
+          rm -rf out/
+
+      - name: Install prefix test
+        run: |
+          python3 build.py --install="$HOME/install" -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake -S libOTe_Tests/cmakeTests -B libOTe_Tests/cmakeTests/out/ -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$HOME/install"
+          cmake --build libOTe_Tests/cmakeTests/out/
+          ./libOTe_Tests/cmakeTests/out/main
+
+      - name: System install test
+        run: |
+          python3 build.py --install --sudo -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          rm -rf libOTe_Tests/cmakeTests/out/
+          cmake -S libOTe_Tests/cmakeTests -B libOTe_Tests/cmakeTests/out/ -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build libOTe_Tests/cmakeTests/out/
+          ./libOTe_Tests/cmakeTests/out/main
+
+  curve25519-sodium-fallback:
+    name: Curve25519 sodium fallback
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install libsodium development package
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsodium-dev
+
+      - name: Build Curve25519 base OTs with fallback backends
+        run: >-
+          python3 build.py --setup --par=4
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_SIMPLESTOT=ON
+          -DENABLE_MR=ON
+          -DENABLE_BMM=ON
+          -DENABLE_MRR=ON
+          -DENABLE_MRR_TWIST=ON
+          -DENABLE_LOGVOLE=OFF
+          -DENABLE_CIRCUITS=OFF
+          -DENABLE_EDWARDS25519_ASM=OFF
+          -DENABLE_EDWARDS25519_IFMA=OFF
+          -DENABLE_SODIUM=ON
+          -DSODIUM_MONTGOMERY=OFF
+
+      - name: Build frontend
+        run: cmake --build out/build/linux --target frontend_libOTe --parallel 4
+
+      - name: Verify fallback configuration
+        run: |
+          grep -q '^ENABLE_SIMPLESTOT:BOOL=ON$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_MR:BOOL=ON$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_BMM:BOOL=ON$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_MRR:BOOL=ON$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_MRR_TWIST:BOOL=ON$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_LOGVOLE:BOOL=OFF$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_CIRCUITS:BOOL=OFF$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_EDWARDS25519_ASM:BOOL=OFF$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_EDWARDS25519_IFMA:BOOL=OFF$' out/build/linux/CMakeCache.txt
+          grep -q '^ENABLE_SODIUM:BOOL=ON$' out/build/linux/CMakeCache.txt
+          grep -q '^SODIUM_MONTGOMERY:BOOL=OFF$' out/build/linux/CMakeCache.txt
+
+      - name: Test Curve25519 base OTs
+        run: ./out/build/linux/frontend/frontend_libOTe -u Bot_
+
+  build-macos:
+    needs: build-ubuntu
+    if: ${{ !cancelled() }}
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Build libOTe
+        run: python3 build.py --par=4 -DENABLE_ALL_OT=ON -DENABLE_BOOST=OFF -DENABLE_SSE=OFF -DENABLE_SPIN=OFF -DENABLE_MOCK_OT=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Unit tests
+        run: ./out/build/osx/frontend/frontend_libOTe -u
+
+  build-windows:
+    needs: build-macos
+    if: ${{ !cancelled() }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: seanmiddleditch/gha-setup-ninja@v3
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build libOTe
+        run: python build.py --par=4 -DENABLE_ALL_OT=ON -DENABLE_MOCK_OT=ON -DENABLE_EDWARDS25519_ASM=ON -G Ninja
+
+      - name: Verify Win64 Edwards25519 assembly backend
+        shell: pwsh
+        run: |
+          $cacheEntry = Select-String -Path out/build/x64-Release/CMakeCache.txt -Pattern '^ENABLE_EDWARDS25519_ASM:BOOL=ON$'
+          if (-not $cacheEntry) {
+            throw 'The Win64 Edwards25519 assembly backend was not selected.'
+          }
+
+      - name: Unit tests
+        run: ./out/build/x64-Release/frontend/frontend_libOTe.exe -u

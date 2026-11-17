@@ -1,0 +1,1714 @@
+﻿#include "SilentOT_Tests.h"
+
+#include "libOTe/TwoChooseOne/Silent/SilentOtExtSender.h"
+#include "libOTe/TwoChooseOne/Silent/SilentOtExtReceiver.h"
+#include <cryptoTools/Common/Log.h>
+#include <cryptoTools/Common/BitVector.h>
+#include <cryptoTools/Common/Range.h>
+#include <cryptoTools/Network/IOService.h>
+#include <cryptoTools/Common/TestCollection.h>
+#include "libOTe/Tools/Tools.h"
+#include "libOTe/Tools/QuasiCyclicCode.h"
+#include "Common.h"
+#include "libOTe/Triple/SilentOtTriple/SilentOtTriple.h"
+#include "coproto/Socket/BufferingSocket.h"
+#ifdef ENABLE_SPIN
+#include "libOTe/Tools/Spin/SpinCode.h"
+#endif
+#include <limits>
+
+using namespace oc;
+using namespace tests_libOTe;
+
+//=================================================================================================
+// Utility tests for the underlying encoding components
+//=================================================================================================
+
+void Tools_bitShift_test(const CLP& cmd)
+{
+#ifdef ENABLE_BITPOLYMUL
+    // Test parameters
+    u64 n = cmd.getOr("n", 10);
+    u64 t = cmd.getOr("t", 10);
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+
+    std::vector<block> dest(n), in;
+    prng.get(dest.data(), dest.size());
+
+    // Test bitShiftXor with various shift values
+    for (u64 i = 0; i < t; ++i)
+    {
+        u8 bitShift = i ? prng.get<u8>() % 128 : 64;
+
+        u64 inSize = std::max<u64>(1, n + (i & 1 ? 1 : -1));
+        u64 inBits = std::min<u64>(n * 128, inSize * 128 - bitShift);
+
+        in.resize(inSize);
+        prng.get(in.data(), in.size());
+        memset(dest.data(), 0, dest.size() * 16);
+
+        // Create reference bit vectors to compare against
+        BitVector dv((u8*)dest.data(), n * 128);
+        BitVector iv, ivt((u8*)in.data(), in.size() * 128);
+        iv.append((u8*)in.data(), inBits, bitShift);
+        iv.resize(n * 128, 0);
+        auto dv1 = dv;
+        dv ^= iv;
+
+        // Apply bitShiftXor operation
+        QuasiCyclicCode::bitShiftXor(dest, in, bitShift);
+        BitVector dv2((u8*)dest.data(), n * 128);
+
+        // Verify results
+        if (dv != dv2)
+        {
+            auto b = (bitShift > 64) ? 128 - bitShift : 64 - bitShift;
+            std::cout << "\n" << int(bitShift) << "\n";
+            std::cout << " i* " << ivt << std::endl;
+            std::cout << " i  " << iv << std::endl;
+            std::cout << " d  " << dv1 << std::endl;
+            std::cout << "   " << std::string(b, ' ') << std::string(bitShift, 'x') << '\n';
+            std::cout << "act " << dv2 << std::endl;
+            std::cout << "exp " << dv << std::endl;
+            std::cout << "    " << (dv2 ^ dv) << std::endl;
+            throw RTE_LOC;
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_BITPOLYMUL not defined.");
+#endif
+}
+
+// Helper function to clear bits after a specified index
+void clearBits(span<block> in, u64 idx)
+{
+    auto p = (u8*)in.data() + idx / 8;
+    auto e = (u8*)in.data() + in.size() * 16;
+
+    if (idx & 7)
+    {
+        *p++ &= (1 << (idx & 7)) - 1;
+    }
+
+    while (p != e)
+        *p++ = 0;
+
+    // Verify that bits were properly cleared
+    BitVector test((u8*)in.data(), in.size() * 128);
+    for (u64 i = idx; i < test.size(); ++i)
+        if (test[i])
+            throw RTE_LOC;
+}
+
+void Tools_modp_test(const CLP& cmd)
+{
+#ifdef ENABLE_BITPOLYMUL
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+
+    auto iBits = cmd.getOr("c", 1026ull);
+    auto nBits = cmd.getOr("n", 223ull);
+
+    auto n = (nBits + 127) / 128;
+    auto c = (iBits + nBits - 1) / nBits;
+
+    std::vector<block> dest(n), in((iBits + 127) / 128);
+
+    for (u64 i = 0; i < dest.size(); ++i)
+    {
+        u64 p = nBits;
+
+        prng.get(in.data(), in.size());
+        memset(in.data(), -1, in.size() * 16);
+        clearBits(in, iBits);
+        memset(dest.data(), 0, dest.size() * 16);
+
+        // Create reference bit vectors for verification
+        BitVector dv((u8*)in.data(), p);
+        BitVector iv;
+
+        for (u64 j = 1; j < c; ++j)
+        {
+            auto rem = std::min<u64>(p, iBits - j * p);
+            iv.resize(0);
+            iv.append((u8*)in.data(), rem, j * p);
+            iv.resize(p, 0);
+            dv ^= iv;
+        }
+
+        // Apply modp operation
+        QuasiCyclicCode::modp(dest, in, p);
+        BitVector dv2((u8*)dest.data(), p);
+
+        // Verify results
+        if (dv != dv2)
+        {
+            auto diff = (dv2 ^ dv);
+            std::cout << "\n" << p << "\n";
+            std::cout << "act     " << dv2 << std::endl;
+            std::cout << "exp     " << dv << std::endl;
+            std::cout << "f       " << diff << std::endl;
+
+            for (u64 i = 0; i < diff.size(); ++i)
+                if (diff[i])
+                    std::cout << " " << i;
+            std::cout << std::endl;
+
+            throw RTE_LOC;
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_BITPOLYMUL not defined.");
+#endif
+}
+
+void Tools_quasiCyclic_test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_BITPOLYMUL
+    QuasiCyclicCode code;
+    u64 k = 1 << 10;
+    u64 t = 1;
+    auto scaler = 2;
+    auto n = k * scaler;
+
+    AlignedUnVector<block> A(n), B(n), C(n);
+
+    PRNG prng(oc::ZeroBlock);
+    code.init2(k, n);
+
+    // AUD-205: compare against a scalar polynomial implementation at a
+    // message size that is itself a suitable QC prime. The production encoder
+    // must select a strictly larger modulus so that the X - 1 syndrome
+    // coordinate is truncated.
+    {
+        const u64 scalarK = 11;
+        const u64 scalarN = 27;
+        const block scalarSeed = block(5, 6);
+        const auto p = nextPrimeWithPrimitiveRootTwo(scalarK + 1);
+        const auto polyBlockSize = divCeil(p, u64{ 128 });
+        const auto parityBlocks = divCeil(scalarN - scalarK, p);
+
+        std::vector<std::vector<u8>> multipliers(parityBlocks,
+            std::vector<u8>(p));
+        for (u64 s = 0; s < parityBlocks; ++s)
+        {
+            PRNG pubPrng(toBlock(s) ^ scalarSeed);
+            std::vector<u64> randomPoly(polyBlockSize * 2);
+            pubPrng.get(randomPoly.data(), randomPoly.size());
+
+            for (u64 bit = 0; bit < randomPoly.size() * 64; ++bit)
+                multipliers[s][bit % p] ^=
+                    *BitIterator(reinterpret_cast<u8*>(randomPoly.data()), bit);
+        }
+
+        for (u64 trial = 0; trial < 4; ++trial)
+        {
+            std::vector<u8> expected(scalarN);
+            if (trial == 0)
+                expected[scalarK] = 1;
+            else if (trial == 1)
+                expected[scalarK + p] = 1;
+            else
+                for (auto& value : expected)
+                    value = prng.getBit();
+            auto actual = expected;
+
+            for (u64 s = 0; s < parityBlocks; ++s)
+            {
+                for (u64 j = 0; j < p; ++j)
+                {
+                    const auto inputIdx = scalarK + s * p + j;
+                    if (inputIdx == scalarN)
+                        break;
+                    if (!expected[inputIdx])
+                        continue;
+
+                    for (u64 i = 0; i < scalarK; ++i)
+                        expected[i] ^= multipliers[s][(i + p - j) % p];
+                }
+            }
+
+            QuasiCyclicCode scalarCode;
+            scalarCode.init2(scalarK, scalarN, scalarSeed);
+            scalarCode.dualEncode(actual);
+            if (actual != expected)
+                throw UnitTestFail(
+                    "quasi-cyclic encoder disagrees with scalar reference" LOCATION);
+        }
+    }
+
+    // Test 1: Linear property - encoding(A ⊕ B) = encoding(A) ⊕ encoding(B)
+    for (auto tt : rng(t))
+    {
+        (void)tt;
+
+        prng.get(A.data(), n);
+        prng.get(B.data(), n);
+
+        for (auto i : rng(n))
+        {
+            C[i] = A[i] ^ B[i];
+        }
+
+        code.dualEncode(A);
+        code.dualEncode(B);
+        code.dualEncode(C);
+
+        for (u64 i : rng(k))
+        {
+            if (C[i] != (A[i] ^ B[i]))
+                throw RTE_LOC;
+        }
+    }
+
+    // Test 2: Binary field property - output consists only of 0/1 blocks
+    for (auto tt : rng(t))
+    {
+        (void)tt;
+
+        for (u64 i = 0; i < n; ++i)
+        {
+            A[i] = oc::zeroAndAllOne[prng.getBit()];
+        }
+
+        code.dualEncode(A);
+
+        for (u64 i : rng(k))
+        {
+            if (A[i] != oc::AllOneBlock && A[i] != oc::ZeroBlock)
+            {
+                std::cout << i << " " << A[i] << std::endl;
+                throw RTE_LOC;
+            }
+        }
+    }
+
+    // Test 3: Matrix representation if requested
+    if (cmd.isSet("getMatrix"))
+    {
+        k = 256;
+        n = k * scaler;
+
+        code.init2(k, n);
+        auto mtx = code.getMatrix();
+        A.resize(n);
+        auto bb = 10;
+
+        prng.get(A.data(), n);
+        DenseMtx AA(bb, n);
+
+        for (auto i : rng(n))
+        {
+            for (u64 j : rng(bb))
+                AA(j, i) = *BitIterator((u8*)&A[i], j);
+        }
+
+        code.dualEncode(A);
+        auto A2 = AA * mtx;
+
+        for (auto i : rng(k))
+        {
+            for (u64 j : rng(bb))
+                if (A2(j, i) != *BitIterator((u8*)&A[i], j))
+                    throw RTE_LOC;
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_BITPOLYMUL not defined.");
+#endif
+}
+
+//=================================================================================================
+// Silent OT Triple tests
+//=================================================================================================
+
+void SilentOtTriple_ole_test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    std::array<SilentOtTriple, 2> oles;
+
+    u64 n = 4232;
+    auto blocks = divCeil(n, 128);
+    bool verbose = cmd.isSet("v");
+
+    PRNG prng0(block(2424523452345, 111124521521455324));
+    PRNG prng1(block(6474567454546, 567546754674345444));
+    Timer timer;
+
+    // Initialize both parties
+    oles[0].init(0, n, SilentSecType::SemiHonest, SilentOtTriple::Type::OLE);
+    oles[1].init(1, n, SilentSecType::SemiHonest, SilentOtTriple::Type::OLE);
+
+    // Set up base OTs
+    {
+        auto otCount0 = oles[0].baseCount(prng0);
+        auto otCount1 = oles[1].baseCount(prng1);
+        if (otCount0.mRecvChoice.size() != otCount1.mSendCount ||
+            otCount0.mSendCount != otCount1.mRecvChoice.size())
+            throw RTE_LOC;
+        
+        std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+        baseSend[0].resize(otCount0.mSendCount);
+        baseSend[1].resize(otCount1.mSendCount);
+        std::array<std::vector<block>, 2> baseRecv;
+        std::array<BitVector, 2> baseChoice{
+            otCount0.mRecvChoice,
+            otCount1.mRecvChoice
+        };
+
+        for (u64 i = 0; i < 2; ++i)
+        {
+            prng0.get(baseSend[i].data(), baseSend[i].size());
+            baseRecv[1 ^ i].resize(baseSend[i].size());
+            for (u64 j = 0; j < baseSend[i].size(); ++j)
+            {
+                baseRecv[1 ^ i][j] = baseSend[i][j][baseChoice[1 ^ i][j]];
+            }
+        }
+
+        oles[0].setBaseOts(baseSend[1], baseRecv[0]);
+        oles[1].setBaseOts(baseSend[1], baseRecv[1]);
+    }
+
+    // Create local socket pair for communication
+    auto sock = coproto::LocalAsyncSocket::makePair();
+    std::vector<block>
+        A(blocks),
+        B(blocks),
+        C0(blocks),
+        C1(blocks);
+
+    // Run protocol
+    auto r = macoro::sync_wait(macoro::when_all_ready(
+        oles[0].expand(A, C0, prng0, sock[0]),
+        oles[1].expand(B, C1, prng1, sock[1])));
+    std::get<0>(r).result();
+    std::get<1>(r).result();
+
+    bool senderInputIsNonzero = false;
+    for (const auto& value : B)
+        senderInputIsNonzero |= value != ZeroBlock;
+    if (!senderInputIsNonzero)
+        throw UnitTestFail("Silent OLE sender produced an all-zero input share");
+
+    // Verify OLE correlation: C0 ⊕ C1 = A & B
+    for (size_t i = 0; i < blocks; i++)
+    {
+        auto act = C0[i] ^ C1[i];
+        auto exp = A[i] & B[i];
+
+        if (act != exp)
+        {
+            std::cout << "i " << i << std::endl;
+            std::cout << "act " << act << std::endl;
+            std::cout << "exp " << exp << std::endl;
+            throw RTE_LOC;
+        }
+
+        // Additional check for first block to verify triple correlation
+        if (i == 0)
+        {
+            // OLE triple computation:
+            // a0 * b0 + a0 * b1 + a1 * b0 + a1 * b1 = c0 + c1
+            auto a0 = A[0];
+            auto b0 = A[1];
+            auto a1 = B[1];
+            auto b1 = B[0];
+
+            auto c0 = (a0 & b0) ^ C0[0] ^ C0[1];
+            auto c1 = (a1 & b1) ^ C1[0] ^ C1[1];
+
+            if (((a0 ^ a1) & (b0 ^ b1)) != (c0 ^ c1))
+                throw RTE_LOC;
+        }
+    }
+
+    if (verbose)
+        std::cout << "Time taken: \n" << timer << std::endl;
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void SilentOtTriple_Audit_test(const oc::CLP&)
+{
+#ifdef ENABLE_SILENTOT
+	auto expectRejected = [](auto&& fn)
+	{
+		bool rejected = false;
+		try
+		{
+			fn();
+		}
+		catch (const std::invalid_argument&)
+		{
+			rejected = true;
+		}
+		if (!rejected)
+			throw UnitTestFail("SilentOtTriple accepted an invalid request");
+	};
+
+    SilentOtTriple triple;
+    if (triple.isInitialized())
+        throw UnitTestFail("Default SilentOtTriple reported initialized state");
+    if (triple.hasBaseOts())
+        throw UnitTestFail("Default SilentOtTriple reported available base OTs");
+
+	expectRejected([&] { triple.init(0, 0); });
+	expectRejected([&] { triple.init(2, 128); });
+	expectRejected([&] {
+		triple.init(0, 128, SilentSecType::SemiHonest,
+			static_cast<SilentOtTriple::Type>(2));
+	});
+
+	triple.init(0, 128, SilentSecType::SemiHonest, SilentOtTriple::Type::OLE);
+	const auto oldN = triple.mN;
+	const auto oldPartyIdx = triple.mPartyIdx;
+	const auto oldType = triple.mType;
+	expectRejected([&] {
+		triple.init(1, static_cast<u64>(std::numeric_limits<u32>::max()) + 1,
+			SilentSecType::SemiHonest, SilentOtTriple::Type::OLE);
+	});
+	if (triple.mN != oldN || triple.mPartyIdx != oldPartyIdx ||
+		triple.mType != oldType || !triple.isInitialized())
+		throw UnitTestFail("Rejected SilentOtTriple reconfiguration changed live state");
+
+	PRNG prng(CCBlock);
+	auto sockets = coproto::LocalAsyncSocket::makePair();
+	expectRejected([&] {
+		macoro::sync_wait(triple.genBaseOts(
+			prng, sockets[0], static_cast<SilentBaseType>(255)));
+	});
+	std::vector<block> A(1), B(1), C(1);
+	expectRejected([&] {
+		macoro::sync_wait(triple.expand(A, B, C, prng, sockets[0]));
+	});
+
+	SilentOtTriple triples;
+	triples.init(0, 128, SilentSecType::SemiHonest, SilentOtTriple::Type::Triple);
+	std::vector<block> oleA(2), oleC(2);
+	expectRejected([&] {
+		macoro::sync_wait(triples.expand(oleA, oleC, prng, sockets[1]));
+	});
+
+	auto testMaliciousExternalBaseOts = [](SilentOtTriple::Type type)
+	{
+		constexpr u64 n = 128;
+		std::array<SilentOtTriple, 2> parties;
+		std::array<PRNG, 2> prngs{ PRNG(CCBlock), PRNG(OneBlock) };
+		parties[0].init(0, n, SilentSecType::Malicious, type);
+		parties[1].init(1, n, SilentSecType::Malicious, type);
+
+		auto receiverCount = parties[0].baseCount(prngs[0]);
+		auto senderCount = parties[1].baseCount(prngs[1]);
+		if (receiverCount.mRecvChoice.size() != senderCount.mSendCount)
+			throw UnitTestFail("SilentOtTriple malicious base counts disagree");
+
+		std::vector<std::array<block, 2>> sendBase(senderCount.mSendCount);
+		std::vector<block> recvBase(senderCount.mSendCount);
+		prngs[1].get(sendBase.data(), sendBase.size());
+		for (u64 i = 0; i < sendBase.size(); ++i)
+			recvBase[i] = sendBase[i][receiverCount.mRecvChoice[i]];
+
+		parties[0].setBaseOts({}, recvBase);
+		parties[1].setBaseOts(sendBase, {});
+		if (!parties[0].hasBaseOts() || !parties[1].hasBaseOts())
+			throw UnitTestFail("SilentOtTriple did not report installed base correlations");
+
+		auto testSockets = coproto::LocalAsyncSocket::makePair();
+		if (type == SilentOtTriple::Type::OLE)
+		{
+			std::array<std::vector<block>, 2> A{ std::vector<block>(1), std::vector<block>(1) };
+			std::array<std::vector<block>, 2> C{ std::vector<block>(1), std::vector<block>(1) };
+			auto result = macoro::sync_wait(macoro::when_all_ready(
+				parties[0].expand(A[0], C[0], prngs[0], testSockets[0]),
+				parties[1].expand(A[1], C[1], prngs[1], testSockets[1])));
+			std::get<0>(result).result();
+			std::get<1>(result).result();
+			if ((C[0][0] ^ C[1][0]) != (A[0][0] & A[1][0]))
+				throw UnitTestFail("SilentOtTriple malicious external-base OLE failed");
+		}
+		else
+		{
+			std::array<std::vector<block>, 2> A{ std::vector<block>(1), std::vector<block>(1) };
+			std::array<std::vector<block>, 2> B{ std::vector<block>(1), std::vector<block>(1) };
+			std::array<std::vector<block>, 2> C{ std::vector<block>(1), std::vector<block>(1) };
+			auto result = macoro::sync_wait(macoro::when_all_ready(
+				parties[0].expand(A[0], B[0], C[0], prngs[0], testSockets[0]),
+				parties[1].expand(A[1], B[1], C[1], prngs[1], testSockets[1])));
+			std::get<0>(result).result();
+			std::get<1>(result).result();
+			if ((C[0][0] ^ C[1][0]) !=
+				((A[0][0] ^ A[1][0]) & (B[0][0] ^ B[1][0])))
+				throw UnitTestFail("SilentOtTriple malicious external-base triple failed");
+		}
+	};
+
+	testMaliciousExternalBaseOts(SilentOtTriple::Type::OLE);
+	testMaliciousExternalBaseOts(SilentOtTriple::Type::Triple);
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void SilentOtTriple_triple_test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    std::array<SilentOtTriple, 2> oles;
+
+    u64 n = 4232;
+    auto blocks = divCeil(n, 128);
+    bool verbose = cmd.isSet("v");
+
+    PRNG prng0(block(2424523452345, 111124521521455324));
+    PRNG prng1(block(6474567454546, 567546754674345444));
+    Timer timer;
+
+    // Initialize both parties
+    oles[0].init(0, n, SilentSecType::SemiHonest, SilentOtTriple::Type::Triple);
+    oles[1].init(1, n, SilentSecType::SemiHonest, SilentOtTriple::Type::Triple);
+
+    // Set up base OTs
+    {
+        auto otCount0 = oles[0].baseCount(prng0);
+        auto otCount1 = oles[1].baseCount(prng1);
+        if (otCount0.mRecvChoice.size() != otCount1.mSendCount ||
+            otCount0.mSendCount != otCount1.mRecvChoice.size())
+            throw RTE_LOC;
+        
+        std::array<std::vector<std::array<block, 2>>, 2> baseSend;
+        baseSend[0].resize(otCount0.mSendCount);
+        baseSend[1].resize(otCount1.mSendCount);
+        std::array<std::vector<block>, 2> baseRecv;
+        std::array<BitVector, 2> baseChoice{
+            otCount0.mRecvChoice,
+            otCount1.mRecvChoice
+        };
+
+        for (u64 i = 0; i < 2; ++i)
+        {
+            prng0.get(baseSend[i].data(), baseSend[i].size());
+            baseRecv[1 ^ i].resize(baseSend[i].size());
+            for (u64 j = 0; j < baseSend[i].size(); ++j)
+            {
+                baseRecv[1 ^ i][j] = baseSend[i][j][baseChoice[1 ^ i][j]];
+            }
+        }
+
+        oles[0].setBaseOts(baseSend[1], baseRecv[0]);
+        oles[1].setBaseOts(baseSend[1], baseRecv[1]);
+    }
+
+    // Create local socket pair for communication
+    auto sock = coproto::LocalAsyncSocket::makePair();
+    std::vector<block>
+        Av0(blocks),
+        Av1(blocks),
+        Bv0(blocks),
+        Bv1(blocks),
+        Cv0(blocks),
+        Cv1(blocks);
+
+    // Run protocol
+    auto r = macoro::sync_wait(macoro::when_all_ready(
+        oles[0].expand(Av0, Bv0, Cv0, prng0, sock[0]),
+        oles[1].expand(Av1, Bv1, Cv1, prng1, sock[1])));
+    std::get<0>(r).result();
+    std::get<1>(r).result();
+
+    // Verify triple correlation: C0 ⊕ C1 = (A0 ⊕ A1) & (B0 ⊕ B1)
+    for (size_t i = 0; i < blocks; i++)
+    {
+        auto act = Cv0[i] ^ Cv1[i];
+        auto exp = (Av0[i] ^ Av1[i]) & (Bv0[i] ^ Bv1[i]);
+
+        if (act != exp)
+        {
+            std::cout << "i " << i << std::endl;
+            std::cout << "act " << act << std::endl;
+            std::cout << "exp " << exp << std::endl;
+            throw RTE_LOC;
+        }
+    }
+
+    if (verbose)
+        std::cout << "Time taken: \n" << timer << std::endl;
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+//=================================================================================================
+// Silent OT Extension tests - Helper functions
+//=================================================================================================
+
+#ifdef ENABLE_SILENTOT
+namespace {
+    /**
+     * @brief Sets up fake base OTs and VOLEs for testing.
+     *
+     * This function creates base OTs and VOLEs without network communication
+     * for efficient testing.
+     * 
+     * @param n Number of OTs
+     * @param s Scaling factor
+     * @param threads Number of threads
+     * @param prng Source of randomness
+     * @param recver Receiver instance
+     * @param sender Sender instance
+     * @param delta Optional delta value for VOLE correlation
+     */
+    void fakeBase(
+        u64 n,
+        u64 s,
+        u64 threads,
+        PRNG& prng,
+        SilentOtExtReceiver& recver, 
+        SilentOtExtSender& sender,
+        std::optional<block> delta = {})
+    {
+        auto count = sender.baseCount();
+        auto D = delta.value_or(prng.get<block>());
+
+        std::vector<std::array<block, 2>> msg2(count.mBaseOtCount);
+        std::vector<block> baseA(count.mBaseVoleCount), baseB(count.mBaseVoleCount);
+        BitVector baseC(count.mBaseVoleCount);
+        baseC.randomize(prng);
+
+        // Generate random base OT messages
+        for (u64 i = 0; i < msg2.size(); ++i)
+        {
+            msg2[i][0] = prng.get();
+            msg2[i][1] = prng.get();
+        }
+
+        // Generate base VOLE correlation
+        prng.get(baseB.data(), baseB.size());
+        for (u64 i = 0; i < baseA.size(); ++i)
+        {
+            // A = B + C * delta
+            baseA[i] = baseB[i] ^ (baseC[i] ? D : ZeroBlock);
+        }
+
+        // Set the base correlations
+        sender.setBaseCors(msg2, baseB, D);
+
+        // Set receiver's base OTs and VOLEs
+        {
+            BitVector choices = recver.sampleBaseChoiceBits(prng);
+            std::vector<block> msg(choices.size());
+            for (u64 i = 0; i < msg.size(); ++i)
+                msg[i] = msg2[i][choices[i]];
+            recver.setBaseCors(msg, choices, baseA, baseC);
+        }
+    }
+
+    /**
+     * @brief Validates random OT output.
+     * 
+     * Verifies that the receiver gets exactly one of the sender's messages
+     * according to the choice bit, and that the distribution of choice bits
+     * is sufficiently random.
+     *
+     * @param messages Receiver's OT messages
+     * @param messages2 Sender's OT message pairs
+     * @param choice Receiver's choice bits
+     * @param n Number of OTs
+     * @param verbose Enable detailed output
+     */
+    void checkRandom(
+        span<block> messages, 
+        span<std::array<block, 2>> messages2,
+        BitVector& choice, 
+        u64 n,
+        bool verbose)
+    {
+        if (messages.size() != n)
+            throw RTE_LOC;
+        if (messages2.size() != n)
+            throw RTE_LOC;
+        if (choice.size() != n)
+            throw RTE_LOC;
+            
+        bool passed = true;
+
+        // Check that choice bits are well-distributed
+        auto hamming = choice.hammingWeight();
+        auto threshold = n / 2 - 2 * std::sqrt(n);
+        if (hamming < threshold)
+            throw RTE_LOC;
+            
+        // Verify each OT message
+        for (u64 i = 0; i < n; ++i)
+        {
+            block m1 = messages[i];
+            block m2a = messages2[i][0];
+            block m2b = messages2[i][1];
+            u8 c = choice[i];
+
+            std::array<bool, 2> eqq{
+                eq(m1, m2a),
+                eq(m1, m2b)
+            };
+            
+            // Received wrong message
+            if (eqq[c ^ 1] == true)
+            {
+                passed = false;
+                if (verbose)
+                    std::cout << Color::Pink;
+            }
+            
+            // Didn't receive either message
+            if (eqq[0] == false && eqq[1] == false)
+            {
+                passed = false;
+                if (verbose)
+                    std::cout << Color::Red;
+            }
+
+            if (eqq[c] == false && verbose)
+                std::cout << "m" << i << " " << m1 << " != (" << m2a << " " << m2b << ")_" << (int)c << "\n";
+        }
+
+        if (passed == false)
+            throw RTE_LOC;
+    }
+
+    /**
+     * @brief Validates correlated OT output.
+     * 
+     * Verifies that the receiver's messages and sender's messages satisfy the
+     * correlation Ar = Bs ⊕ (choice * delta) for each OT.
+     *
+     * @param Ar Receiver's OT messages
+     * @param Bs Sender's OT messages
+     * @param choice Receiver's choice bits
+     * @param delta Correlation value
+     * @param n Number of OTs
+     * @param verbose Enable detailed output
+     * @param packing Choice bit packing method
+     */
+    template<typename Choice>
+    void checkCorrelated(
+        span<block> Ar, 
+        span<block> Bs,
+        Choice& choice, 
+        block delta, 
+        u64 n,
+        bool verbose,
+        ChoiceBitPacking packing)
+    {
+        if (Ar.size() != n)
+            throw RTE_LOC;
+        if (Bs.size() != n)
+            throw RTE_LOC;
+        if (packing == ChoiceBitPacking::False &&
+            (u64)choice.size() != n)
+            throw RTE_LOC;
+            
+        bool passed = true;
+        block mask = AllOneBlock ^ OneBlock;
+        u64 hamming = 0;
+
+        for (u64 i = 0; i < n; ++i)
+        {
+            block m1 = Ar[i];
+            block m2a = Bs[i];
+            block m2b = (Bs[i] ^ delta);
+            u8 c, c2;
+
+            // For packed choice bits, extract from LSB
+            if (packing == ChoiceBitPacking::True)
+            {
+                c = u8((m1 & OneBlock) == OneBlock) & 1;
+                m1 = m1 & mask;
+                m2a = m2a & mask;
+                m2b = m2b & mask;
+
+                // Verify against explicit choice bits if provided
+                if (choice.size())
+                {
+                    c2 = choice[i];
+                    if (c2 != c)
+                        throw RTE_LOC;
+                }
+            }
+            else
+            {
+                c = choice[i];
+            }
+
+            hamming += c;
+
+            // Check correlation: Ar = Bs ⊕ (c * delta)
+            std::array<bool, 2> eqq{
+                eq(m1, m2a),  // c=0: Ar = Bs
+                eq(m1, m2b)   // c=1: Ar = Bs ⊕ delta
+            };
+
+            bool good = true;
+            if (eqq[c] == false || eqq[c ^ 1] == true)
+            {
+                good = passed = false;
+                std::cout << Color::Pink;
+            }
+            if (eqq[0] == false && eqq[1] == false)
+            {
+                good = passed = false;
+                std::cout << Color::Red;
+            }
+
+            if (!good)
+            {
+                std::cout << i << " m " << mask << std::endl;
+                std::cout << "r " << m1 << " " << int(c) << std::endl;
+                std::cout << "s " << m2a << " " << m2b << std::endl;
+                std::cout << "d " << (m1 ^ m2a) << " " << (m1 ^ m2b) << std::endl;
+            }
+
+            std::cout << Color::Default;
+        }
+
+        if (passed == false)
+            throw RTE_LOC;
+
+        // Check for a material bias without making the deterministic test
+        // transcript fail on an ordinary two-standard-deviation sample.
+        const auto midpoint = n / 2;
+        const auto deviation = hamming > midpoint ? hamming - midpoint : midpoint - hamming;
+        if (n > 100 && deviation > 2 * std::sqrt(n))
+            throw RTE_LOC;
+    }
+}
+#endif
+
+//=================================================================================================
+// Silent OT Extension tests
+//=================================================================================================
+
+void OtExt_Silent_random_Test(const CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    u64 n = cmd.getOr("n", 1024);
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    // Initialize Silent OT
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+    sender.configure(n);
+    recver.configure(n);
+    fakeBase(n, s, threads, prng, recver, sender);
+    
+    auto type = OTType::Random;
+    sender.mDebug = cmd.isSet("debug");
+    recver.mDebug = cmd.isSet("debug");
+
+    // Run protocol
+    std::vector<block> messages2(n);
+    BitVector choice(n);
+    std::vector<std::array<block, 2>> messages(n);
+
+    auto p0 = sender.silentSend(messages, prng, sockets[0]);
+    auto p1 = recver.silentReceive(choice, messages2, prng, sockets[1], type);
+
+    eval(p0, p1);
+
+    // Verify results
+    checkRandom(messages2, messages, choice, n, verbose);
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_ExAcc_Test(const CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    const u64 n = cmd.getOr("n", 128);
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    const MultType types[] = {
+        MultType::ExAcc40
+    };
+
+    for (const auto type : types)
+    {
+        auto sockets = cp::LocalAsyncSocket::makePair();
+        SilentOtExtSender sender;
+        SilentOtExtReceiver receiver;
+        sender.configure(n, 2, 1, SilentSecType::SemiHonest,
+            SdNoiseDistribution::Regular, type);
+        receiver.configure(n, 2, 1, SilentSecType::SemiHonest,
+            SdNoiseDistribution::Regular, type);
+        fakeBase(n, 2, 1, prng, receiver, sender);
+
+        std::vector<std::array<block, 2>> senderMessages(n);
+        std::vector<block> receiverMessages(n);
+        BitVector choices(n);
+        auto send = sender.silentSend(senderMessages, prng, sockets[0]);
+        auto receive = receiver.silentReceive(
+            choices, receiverMessages, prng, sockets[1]);
+        eval(send, receive);
+        checkRandom(receiverMessages, senderMessages, choices, n, false);
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_correlated_Test(const CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    u64 n = cmd.getOr("n", 10000);
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    // Initialize Silent OT
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+    sender.configure(n);
+    recver.configure(n);
+    fakeBase(n, s, threads, prng, recver, sender);
+
+    // Run protocol (correlated OT)
+    std::vector<block> messages2(n);
+    BitVector choice(n);
+    std::vector<block> messages(n);
+    auto type = OTType::Correlated;
+
+    auto delta = *sender.mDelta;
+    auto p0 = sender.silentSend({}, messages, prng, sockets[0]);
+    auto p1 = recver.silentReceive(choice, messages2, prng, sockets[1], type);
+
+    eval(p0, p1);
+
+    // Verify results
+    checkCorrelated(
+		messages, messages2, choice, delta,
+        n, verbose, ChoiceBitPacking::False);
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_inplace_Test(const CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    u64 n = cmd.getOr("n", 10000);
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+    sender.configure(n);
+    recver.configure(n);
+
+    // Test 1: Regular correlated OT with separate choice bits
+    {
+        fakeBase(n, s, threads, prng, recver, sender);
+        auto delta = *sender.mDelta;
+        
+        auto p0 = sender.silentSendInplace(delta, n, prng, sockets[0]);
+        auto p1 = recver.silentReceiveInplace(n, prng, sockets[1]);
+
+        eval(p0, p1);
+
+        auto& messages = recver.mA;
+        auto& messages2 = sender.mB;
+        auto& choice = recver.mC;
+        
+        checkCorrelated(messages, messages2, choice, delta,
+            n, verbose, ChoiceBitPacking::False);
+    }
+
+    // Test 2: Correlated OT with packed choice bits
+    {
+        fakeBase(n, s, threads, prng, recver, sender);
+        auto delta = *sender.mDelta;
+        
+        auto p0 = sender.silentSendInplace(delta, n, prng, sockets[0]);
+        auto p1 = recver.silentReceiveInplace(n, prng, sockets[1], ChoiceBitPacking::True);
+
+        eval(p0, p1);
+
+        auto& messages = recver.mA;
+        auto& messages2 = sender.mB;
+        auto& choice = recver.mC;
+        
+        checkCorrelated(messages, messages2, choice, delta,
+            n, verbose, ChoiceBitPacking::True);
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_paramSweep_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    // Test different sizes of OTs
+    std::vector<u64> nn = cmd.getManyOr<u64>("n",
+        { 12, 433, 1024, 2048, 5466 });
+
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+
+    // Run tests with different OT counts
+    for (auto n : nn)
+    {
+        sender.configure(n);
+        recver.configure(n);
+        fakeBase(n, s, threads, prng, recver, sender);
+        auto delta = *sender.mDelta;
+
+        auto p0 = sender.silentSendInplace(delta, n, prng, sockets[0]);
+        auto p1 = recver.silentReceiveInplace(n, prng, sockets[1]);
+
+        eval(p0, p1);
+
+        checkCorrelated(sender.mB, recver.mA, recver.mC, delta,
+            n, verbose, ChoiceBitPacking::False);
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_QuasiCyclic_Test(const oc::CLP& cmd)
+{
+#if defined(ENABLE_SILENTOT) && defined(ENABLE_BITPOLYMUL)
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    std::vector<u64> nn = cmd.getManyOr<u64>("n",
+        { 134 });
+
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+
+    Timer timer;
+    sender.setTimer(timer);
+    
+    for (auto n : nn)
+    {
+        // Test with QuasiCyclic encoding
+        std::vector<std::array<block, 2>> msg2(n);
+        std::vector<block> msg1(n);
+        BitVector choice(n);
+        
+        sender.configure(n, 2, 1, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::QuasiCyclic);
+        recver.configure(n, 2, 1, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::QuasiCyclic);
+        
+        fakeBase(n, s, threads, prng, recver, sender);
+        auto delta = *sender.mDelta;
+        
+        auto p0 = sender.silentSend(msg2, prng, sockets[0]);
+        auto p1 = recver.silentReceive(choice, msg1, prng, sockets[1]);
+
+        eval(p0, p1);
+
+        checkRandom(msg1, msg2, choice, n, verbose);
+
+        // AUD-209: correlated stationary OT must retain synchronized encoder
+        // state across expansions. The sender previously reset its code seed
+        // while the receiver advanced to the next seed.
+        auto stationarySockets = cp::LocalAsyncSocket::makePair();
+        SilentOtExtSender stationarySender;
+        SilentOtExtReceiver stationaryReceiver;
+        stationarySender.configure(n, 2, 1, SilentSecType::SemiHonest,
+            SdNoiseDistribution::Stationary, MultType::QuasiCyclic);
+        stationaryReceiver.configure(n, 2, 1, SilentSecType::SemiHonest,
+            SdNoiseDistribution::Stationary, MultType::QuasiCyclic);
+
+        std::vector<block> stationarySend(n), stationaryRecv(n);
+        BitVector stationaryChoices(n);
+        const auto stationaryDelta = prng.get<block>();
+        for (u64 iteration = 0; iteration < 2; ++iteration)
+        {
+            fakeBase(n, s, threads, prng, stationaryReceiver,
+                stationarySender, stationaryDelta);
+            auto stationaryP0 = stationarySender.silentSend(
+                stationaryDelta, stationarySend, prng, stationarySockets[0]);
+            auto stationaryP1 = stationaryReceiver.silentReceive(
+                stationaryChoices, stationaryRecv, prng, stationarySockets[1],
+                OTType::Correlated);
+            eval(stationaryP0, stationaryP1);
+
+            checkCorrelated(stationarySend, stationaryRecv, stationaryChoices,
+                stationaryDelta, n, verbose, ChoiceBitPacking::False);
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT or ENABLE_BITPOLYMUL are not defined.");
+#endif
+}
+
+void OtExt_Silent_Tungsten_Test(const oc::CLP& cmd)
+{
+#if defined(ENABLE_SILENTOT) 
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    std::vector<u64> nn = cmd.getManyOr<u64>("n",
+        { 1234 });
+
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+
+    for (auto n : nn)
+    {
+        // Test 1: Random OT with Tungsten encoding
+        {
+            std::vector<std::array<block, 2>> msg2(n);
+            std::vector<block> msg1(n);
+            BitVector choice(n);
+            
+            sender.configure(n, 2, 1, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::Tungsten);
+            recver.configure(n, 2, 1, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::Tungsten);
+
+            fakeBase(n, s, threads, prng, recver, sender);
+            
+            auto p0 = sender.silentSend(msg2, prng, sockets[0]);
+            auto p1 = recver.silentReceive(choice, msg1, prng, sockets[1]);
+
+            eval(p0, p1);
+
+            checkRandom(msg1, msg2, choice, n, verbose);
+        }
+
+        // Test 2: Correlated OT with Tungsten encoding
+        {
+            sender.configure(n);
+            recver.configure(n);
+            auto type = ChoiceBitPacking::False;
+            
+            fakeBase(n, s, threads, prng, recver, sender);
+            auto delta = *sender.mDelta;
+
+            auto p0 = sender.silentSendInplace(delta, n, prng, sockets[0]);
+            auto p1 = recver.silentReceiveInplace(n, prng, sockets[1], type);
+
+            eval(p0, p1);
+
+            checkCorrelated(recver.mA, sender.mB, recver.mC, delta, n, verbose, type);
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT or ENABLE_INSECURE_SILVER are not defined.");
+#endif
+}
+
+// Silent OT with the SPIN code (MultType::Spin). The default sizes select
+// both SPIN parameter sets silent OT uses (T64S12R2 up to 2^16 OTs, T128S19
+// above). The SPIN encoder itself is tested by the SPIN library.
+void OtExt_Silent_Spin_Test(const oc::CLP& cmd)
+{
+#if defined(ENABLE_SILENTOT) && defined(ENABLE_SPIN)
+    if (!spin::capabilities().avx2)
+        throw UnitTestSkipped("SPIN requires AVX2");
+
+    auto sockets = cp::LocalAsyncSocket::makePair();
+    std::vector<u64> nn = cmd.getManyOr<u64>("n", { 8193, 65537 });
+    bool verbose = cmd.getOr("v", 0) > 1;
+    u64 threads = cmd.getOr("t", 4);
+    u64 s = cmd.getOr("s", 2);
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+    for (auto n : nn)
+    {
+        // Random OT.
+        {
+            std::vector<std::array<block, 2>> msg2(n);
+            std::vector<block> msg1(n);
+            BitVector choice(n);
+            sender.configure(n, s, threads, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::Spin);
+            recver.configure(n, s, threads, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::Spin);
+            fakeBase(n, s, threads, prng, recver, sender);
+            auto p0 = sender.silentSend(msg2, prng, sockets[0]);
+            auto p1 = recver.silentReceive(choice, msg1, prng, sockets[1]);
+            eval(p0, p1);
+            checkRandom(msg1, msg2, choice, n, verbose);
+        }
+
+        // Correlated OT.
+        {
+            sender.configure(n, s, threads, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::Spin);
+            recver.configure(n, s, threads, SilentSecType::SemiHonest, SdNoiseDistribution::Regular, MultType::Spin);
+            auto type = ChoiceBitPacking::False;
+            fakeBase(n, s, threads, prng, recver, sender);
+            auto delta = *sender.mDelta;
+            auto p0 = sender.silentSendInplace(delta, n, prng, sockets[0]);
+            auto p1 = recver.silentReceiveInplace(n, prng, sockets[1], type);
+            eval(p0, p1);
+            checkCorrelated(recver.mA, sender.mB, recver.mC, delta, n, verbose, type);
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT and ENABLE_SPIN are required.");
+#endif
+}
+
+void OtExt_Silent_baseOT_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    u64 n = 1230;
+    bool verbose = cmd.getOr("v", 0) > 1;
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    // Test with different noise models
+    for (auto noise : { SdNoiseDistribution::Stationary })
+    {
+        // Test with and without OT extension
+        for (auto ext : { false, true })
+        {
+            SilentOtExtSender sender;
+            SilentOtExtReceiver recver;
+
+            std::vector<std::array<block, 2>> msg2(n);
+            std::vector<block> msg1(n);
+            BitVector choice(n);
+
+            sender.configure(n, 2, 1, SilentSecType::SemiHonest, noise);
+            recver.configure(n, 2, 1, SilentSecType::SemiHonest, noise);
+
+            // For stationary noise, reuse the base OTs multiple times
+            u64 c = noise == SdNoiseDistribution::Stationary ? 3 : 1;
+
+            for (u64 j = 0; j < c; ++j)
+            {
+                // Generate base correlations
+                auto g0 = sender.genBaseCors({}, prng, sockets[0], ext);
+                auto g1 = recver.genBaseCors(prng, sockets[1], ext);
+                eval(g0, g1);
+
+                // Run random OT
+                auto p0 = sender.silentSend(msg2, prng, sockets[0]);
+                auto p1 = recver.silentReceive(choice, msg1, prng, sockets[1]);
+                eval(p0, p1);
+
+                checkRandom(msg1, msg2, choice, n, verbose);
+            }
+        }
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_stationary_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    u64 n = 1230;
+    bool verbose = cmd.getOr("v", 0) > 1;
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    // Focus on stationary noise distribution
+    auto noise = SdNoiseDistribution::Stationary;
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver recver;
+    sender.mDebug = cmd.isSet("debug");
+    recver.mDebug = cmd.isSet("debug");
+
+    std::vector<std::array<block, 2>> msg2(n);
+    std::vector<block> msg1(n);
+    BitVector choice(n);
+
+    sender.configure(n, 2, 1, SilentSecType::SemiHonest, noise);
+    recver.configure(n, 2, 1, SilentSecType::SemiHonest, noise);
+
+    // Use same delta across multiple executions (important for stationary noise)
+    u64 c = 4;
+    block delta = prng.get();
+
+    // Run protocol multiple times with the same base correlations
+    for (u64 j = 0; j < c; ++j)
+    {
+        fakeBase(n, 2, 1, prng, recver, sender, delta);
+        
+        auto p0 = sender.silentSend(msg2, prng, sockets[0]);
+        auto p1 = recver.silentReceive(choice, msg1, prng, sockets[1]);
+        eval(p0, p1);
+
+        checkRandom(msg1, msg2, choice, n, verbose);
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_mal_Test(const oc::CLP& cmd)
+{
+#ifdef ENABLE_SILENTOT
+    auto sockets = cp::LocalAsyncSocket::makePair();
+
+    u64 n = 1293;
+    bool verbose = cmd.getOr("v", 0) > 1;
+
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+    PRNG prng1(toBlock(cmd.getOr("seed1", 1)));
+
+    for (auto noise : { SdNoiseDistribution::Regular, SdNoiseDistribution::Stationary })
+    {
+        // Test with malicious security
+        SilentOtExtSender sender;
+        SilentOtExtReceiver recver;
+
+        std::vector<std::array<block, 2>> msg2(n);
+        std::vector<block> msg1(n);
+        BitVector choice(n);
+        sender.configure(n, 2, 1, SilentSecType::Malicious, noise);
+        recver.configure(n, 2, 1, SilentSecType::Malicious, noise);
+
+		u64 iters = noise == SdNoiseDistribution::Stationary ? 3 : 1;
+
+        for (u64 j = 0; j < iters; ++j)
+        {
+            // Run random OT protocol
+            auto p0 = sender.silentSend(msg2, prng, sockets[0]);
+            auto p1 = recver.silentReceive(choice, msg1, prng, sockets[1]);
+            eval(p0, p1);
+            checkRandom(msg1, msg2, choice, n, verbose);
+		}
+    }
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT not defined.");
+#endif
+}
+
+void OtExt_Silent_AuditState_Test(const oc::CLP& cmd)
+{
+#if defined(ENABLE_SILENTOT) && defined(ENABLE_SOFTSPOKEN_OT)
+    PRNG prng(toBlock(cmd.getOr("seed", 0)));
+	const auto expectRejected = [](auto&& fn, const char* message) {
+		bool rejected = false;
+		try { fn(); }
+		catch (const std::exception&) { rejected = true; }
+		if (!rejected)
+			throw UnitTestFail(message);
+	};
+
+    SilentOtExtSender sender;
+    SilentOtExtReceiver receiver;
+	expectRejected([&] {
+		SilentOtExtSender invalid;
+		invalid.configure(0);
+	}, "Silent OT sender accepted a zero OT count");
+	expectRejected([&] {
+		SilentOtExtReceiver invalid;
+		invalid.configure(0);
+	}, "Silent OT receiver accepted a zero OT count");
+	expectRejected([&] {
+		SilentOtExtSender invalid;
+		invalid.configure(128, 2, 1, static_cast<SilentSecType>(255));
+	}, "Silent OT sender accepted an invalid security type");
+	expectRejected([&] {
+		SilentOtExtReceiver invalid;
+		invalid.configure(128, 2, 1, static_cast<SilentSecType>(255));
+	}, "Silent OT receiver accepted an invalid security type");
+	{
+		auto sockets = cp::LocalAsyncSocket::makePair();
+		SilentOtExtReceiver invalid;
+		BitVector choices;
+		std::vector<block> messages;
+		expectRejected([&] {
+			macoro::sync_wait(invalid.silentReceive(
+				choices, messages, prng, sockets[0], static_cast<OTType>(255)));
+		}, "Silent OT receiver accepted an invalid OT type");
+	}
+	{
+		auto sockets = cp::LocalAsyncSocket::makePair();
+		SilentOtExtReceiver invalid;
+		expectRejected([&] {
+			macoro::sync_wait(invalid.silentReceiveInplace(
+				128, prng, sockets[0], static_cast<ChoiceBitPacking>(255)));
+		}, "Silent OT receiver accepted invalid choice-bit packing");
+	}
+	expectRejected([&] {
+		SilentOtExtReceiver invalid;
+		invalid.compress(static_cast<ChoiceBitPacking>(255));
+	}, "Silent OT compression accepted invalid choice-bit packing");
+
+    sender.configure(128, 2, 3, SilentSecType::Malicious,
+        SdNoiseDistribution::Stationary, MultType::ExConv21x24);
+    receiver.configure(128, 2, 3, SilentSecType::Malicious,
+        SdNoiseDistribution::Stationary, MultType::ExConv21x24);
+    sender.mDebug = true;
+    receiver.mDebug = true;
+
+    BitVector senderBaseChoices(sender.baseOtCount());
+    senderBaseChoices.randomize(prng);
+    std::vector<block> senderBase(senderBaseChoices.size());
+    prng.get(senderBase.data(), senderBase.size());
+    sender.setBaseOts(senderBase, senderBaseChoices);
+
+    std::vector<std::array<block, 2>> receiverBase(receiver.baseOtCount());
+    prng.get(receiverBase.data(), receiverBase.size());
+    receiver.setBaseOts(receiverBase);
+
+    auto senderChildBase = sender.split();
+    auto receiverChildBase = receiver.split();
+    auto senderChild = dynamic_cast<SilentOtExtSender*>(senderChildBase.get());
+    auto receiverChild = dynamic_cast<SilentOtExtReceiver*>(receiverChildBase.get());
+    if (!senderChild || !receiverChild ||
+        senderChild->mSecurityType != SilentSecType::Malicious ||
+        receiverChild->mSecurityType != SilentSecType::Malicious ||
+        senderChild->mNoiseDist != SdNoiseDistribution::Stationary ||
+        receiverChild->mNoiseDist != SdNoiseDistribution::Stationary ||
+        senderChild->mLpnMultType != MultType::ExConv21x24 ||
+        receiverChild->mLpnMultType != MultType::ExConv21x24 ||
+        senderChild->mNumThreads != 3 || receiverChild->mNumThreads != 3 ||
+        !senderChild->mDebug || !receiverChild->mDebug)
+        throw RTE_LOC;
+
+    SilentOtExtReceiver invalidReceiver;
+    invalidReceiver.configure(128, 2, 1, SilentSecType::Malicious);
+    auto count = invalidReceiver.baseCount();
+    auto shortChoices = invalidReceiver.sampleBaseChoiceBits(prng);
+    std::vector<block> baseOts(count.mBaseOtCount);
+    bool threw = false;
+    try
+    {
+        invalidReceiver.setBaseCors(baseOts, shortChoices, {}, {});
+    }
+    catch (const std::exception&)
+    {
+        threw = true;
+    }
+
+    if (!threw || invalidReceiver.hasBaseCors())
+        throw RTE_LOC;
+
+	SilentOtExtReceiver mismatchedReceiver;
+	BitVector mismatchedChoices(2);
+	AlignedUnVector<block> mismatchedMessages(1);
+	cp::BufferingSocket closedSocket;
+	macoro::sync_wait(closedSocket.close());
+	bool rejectedMismatch = false;
+	try
+	{
+		macoro::sync_wait(mismatchedReceiver.receive(
+			mismatchedChoices, mismatchedMessages, prng, closedSocket));
+	}
+	catch (const std::invalid_argument&)
+	{
+		rejectedMismatch = true;
+	}
+
+	if (!rejectedMismatch || mismatchedReceiver.isConfigured())
+		throw RTE_LOC;
+
+	SilentOtExtSender unreadyHashSender;
+	unreadyHashSender.configure(128, 2, 1, SilentSecType::SemiHonest);
+	std::vector<std::array<block, 2>> unreadySenderMessages(128);
+	expectRejected([&] {
+		unreadyHashSender.hash(
+			unreadySenderMessages, ChoiceBitPacking::True);
+	}, "Silent OT sender hashed unavailable internal state");
+
+	SilentOtExtReceiver unreadyHashReceiver;
+	unreadyHashReceiver.configure(128, 2, 1, SilentSecType::SemiHonest);
+	BitVector unreadyChoices(128);
+	std::vector<block> unreadyReceiverMessages(128);
+	expectRejected([&] {
+		unreadyHashReceiver.hash(
+			unreadyChoices, unreadyReceiverMessages, ChoiceBitPacking::True);
+	}, "Silent OT receiver hashed unavailable internal state");
+
+	SilentOtExtSender lifecycleSender;
+	SilentOtExtReceiver lifecycleReceiver;
+	lifecycleSender.configure(128, 2, 3, SilentSecType::Malicious,
+		SdNoiseDistribution::Stationary, MultType::ExConv21x24);
+	lifecycleReceiver.configure(128, 2, 3, SilentSecType::Malicious,
+		SdNoiseDistribution::Stationary, MultType::ExConv21x24);
+
+	auto senderCount = lifecycleSender.baseCount();
+	std::vector<std::array<block, 2>> silentSendBase(senderCount.mBaseOtCount);
+	std::vector<block> silentBaseB(senderCount.mBaseVoleCount);
+	prng.get(silentSendBase.data(), silentSendBase.size());
+	prng.get(silentBaseB.data(), silentBaseB.size());
+	lifecycleSender.setBaseCors(silentSendBase, silentBaseB, prng.get());
+
+	auto receiverCount = lifecycleReceiver.baseCount();
+	auto silentChoices = lifecycleReceiver.sampleBaseChoiceBits(prng);
+	silentChoices.resize(receiverCount.mBaseOtCount);
+	std::vector<block> silentRecvBase(receiverCount.mBaseOtCount);
+	std::vector<block> silentBaseA(receiverCount.mBaseVoleCount);
+	BitVector silentBaseC(receiverCount.mBaseVoleCount);
+	prng.get(silentRecvBase.data(), silentRecvBase.size());
+	prng.get(silentBaseA.data(), silentBaseA.size());
+	silentBaseC.randomize(prng);
+	lifecycleReceiver.setBaseCors(
+		silentRecvBase, silentChoices, silentBaseA, silentBaseC);
+
+	auto invalidMult = static_cast<MultType>(255);
+	bool senderConfigThrew = false;
+	bool receiverConfigThrew = false;
+	try
+	{
+		lifecycleSender.configure(256, 2, 1, SilentSecType::SemiHonest,
+			SdNoiseDistribution::Regular, invalidMult);
+	}
+	catch (const std::exception&)
+	{
+		senderConfigThrew = true;
+	}
+	try
+	{
+		lifecycleReceiver.configure(256, 2, 1, SilentSecType::SemiHonest,
+			SdNoiseDistribution::Regular, invalidMult);
+	}
+	catch (const std::exception&)
+	{
+		receiverConfigThrew = true;
+	}
+
+	if (!senderConfigThrew || !receiverConfigThrew ||
+		lifecycleSender.mRequestNumOts != 128 ||
+		lifecycleReceiver.mRequestNumOts != 128 ||
+		lifecycleSender.mSecurityType != SilentSecType::Malicious ||
+		lifecycleReceiver.mSecurityType != SilentSecType::Malicious ||
+		lifecycleSender.mNoiseDist != SdNoiseDistribution::Stationary ||
+		lifecycleReceiver.mNoiseDist != SdNoiseDistribution::Stationary ||
+		!lifecycleSender.hasBaseCors() || !lifecycleReceiver.hasBaseCors())
+		throw RTE_LOC;
+
+	lifecycleSender.mB.resize(1);
+	lifecycleSender.mEncodeTemp.resize(1);
+	lifecycleReceiver.mA.resize(1);
+	lifecycleReceiver.mC.resize(1);
+	lifecycleReceiver.mEncodeTemp.resize(1);
+	lifecycleSender.clear();
+	lifecycleReceiver.clear();
+
+	auto senderGenHasBase = std::visit(
+		[](const auto& gen) { return gen.hasBaseOts(); }, lifecycleSender.mGenVar);
+	auto receiverGenHasBase = std::visit(
+		[](const auto& gen) { return gen.hasBaseOts(); }, lifecycleReceiver.mGenVar);
+	if (lifecycleSender.isConfigured() || lifecycleReceiver.isConfigured() ||
+		senderGenHasBase || receiverGenHasBase ||
+		lifecycleSender.mNumPartitions || lifecycleReceiver.mNumPartitions ||
+		!lifecycleSender.mB.empty() || !lifecycleReceiver.mA.empty() ||
+		!lifecycleReceiver.mC.empty() ||
+		!lifecycleSender.mEncodeTemp.empty() ||
+		!lifecycleReceiver.mEncodeTemp.empty() ||
+		lifecycleSender.mDelta.has_value() ||
+		!lifecycleSender.mMalCheckOts.empty() ||
+		!lifecycleReceiver.mMalCheckOts.empty() ||
+		lifecycleReceiver.mMalCheckChoice.size() ||
+		!lifecycleSender.mBaseB.empty() ||
+		!lifecycleReceiver.mBaseA.empty() || lifecycleReceiver.mBaseC.size() ||
+		lifecycleSender.mCodeSeed != ZeroBlock ||
+		lifecycleReceiver.mCodeSeed != ZeroBlock)
+		throw RTE_LOC;
+
+	SilentOtExtSender failedSender;
+	failedSender.configure(128, 2, 1, SilentSecType::Malicious,
+		SdNoiseDistribution::Stationary, MultType::ExConv21x24);
+	auto failedSenderCount = failedSender.baseCount();
+	std::vector<std::array<block, 2>> failedSendBase(
+		failedSenderCount.mBaseOtCount);
+	std::vector<block> failedBaseB(failedSenderCount.mBaseVoleCount);
+	prng.get(failedSendBase.data(), failedSendBase.size());
+	prng.get(failedBaseB.data(), failedBaseB.size());
+	failedSender.setBaseCors(failedSendBase, failedBaseB, prng.get());
+	auto failedSenderSockets = cp::LocalAsyncSocket::makePair();
+	macoro::sync_wait(failedSenderSockets[1].close());
+	bool failedSenderThrew = false;
+	try
+	{
+		macoro::sync_wait(failedSender.silentSendInplace(
+			prng.get<block>(), 128, prng, failedSenderSockets[0]));
+	}
+	catch (const std::exception&)
+	{
+		failedSenderThrew = true;
+	}
+	if (!failedSenderThrew || failedSender.isConfigured() ||
+		!failedSender.mMalCheckOts.empty() ||
+		!failedSender.mBaseB.empty())
+		throw UnitTestFail("failed Silent OT sender retained correlations");
+
+	SilentOtExtReceiver failedReceiver;
+	failedReceiver.configure(128, 2, 1, SilentSecType::Malicious,
+		SdNoiseDistribution::Stationary, MultType::ExConv21x24);
+	auto failedReceiverCount = failedReceiver.baseCount();
+	auto failedChoices = failedReceiver.sampleBaseChoiceBits(prng);
+	failedChoices.resize(failedReceiverCount.mBaseOtCount);
+	std::vector<block> failedRecvBase(failedReceiverCount.mBaseOtCount);
+	std::vector<block> failedBaseA(failedReceiverCount.mBaseVoleCount);
+	BitVector failedBaseC(failedReceiverCount.mBaseVoleCount);
+	prng.get(failedRecvBase.data(), failedRecvBase.size());
+	prng.get(failedBaseA.data(), failedBaseA.size());
+	failedBaseC.randomize(prng);
+	failedReceiver.setBaseCors(
+		failedRecvBase, failedChoices, failedBaseA, failedBaseC);
+	auto failedReceiverSockets = cp::LocalAsyncSocket::makePair();
+	macoro::sync_wait(failedReceiverSockets[1].close());
+	bool failedReceiverThrew = false;
+	try
+	{
+		macoro::sync_wait(failedReceiver.silentReceiveInplace(
+			128, prng, failedReceiverSockets[0], ChoiceBitPacking::True));
+	}
+	catch (const std::exception&)
+	{
+		failedReceiverThrew = true;
+	}
+	if (!failedReceiverThrew || failedReceiver.isConfigured() ||
+		failedReceiver.hasBaseCors() || !failedReceiver.mMalCheckOts.empty() ||
+		failedReceiver.mMalCheckChoice.size() ||
+		!failedReceiver.mBaseA.empty() || failedReceiver.mBaseC.size())
+		throw UnitTestFail("failed Silent OT receiver retained correlations");
+#else
+    throw UnitTestSkipped("ENABLE_SILENTOT and ENABLE_SOFTSPOKEN_OT are required.");
+#endif
+}

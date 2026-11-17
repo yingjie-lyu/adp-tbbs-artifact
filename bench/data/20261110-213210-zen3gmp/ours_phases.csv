@@ -1,0 +1,210 @@
+variant,stage,phase,per_peer,t,mean_ms_per_signer
+## Total per signer, all instantiations
+
+| t | two-base (main) | single base | single base + short exp |
+|---:|---:|---:|---:|
+| 2 | 135.48 | 97.09 | 59.90 |
+| 3 | 202.79 | 146.49 | 92.52 |
+| 4 | 269.28 | 199.09 | 125.66 |
+| 5 | 351.79 | 253.32 | 158.16 |
+| 6 | 432.55 | 302.43 | 193.13 |
+| 7 | 507.02 | 358.48 | 228.74 |
+
+"ours","1. generating presigning message","round1: hashvrf",false,2,0.1647
+"ours","1. generating presigning message","round1: W_i",false,2,1.0230
+"ours","1. generating presigning message","round1: encode_B",false,2,24.6314
+"ours","2. generating presigning proof","round1: sigma prove",false,2,31.1507
+"ours","3. verifying each peer's presigning proof","round2: verify pi_j",true,2,35.8310
+"ours","4. NIM decoding with each peer","round2: decode mu/nu",true,2,31.3049
+"ours","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,2,5.2193
+"ours","5. finalizing online signing message","round2: masks",false,2,0.0878
+"ours","5. finalizing online signing message","round2: u_i,S_i",false,2,0.0002
+"ours","6. signature combination","combine: aggregate",false,2,0.2623
+"ours","6. signature combination","combine: bbs verify",false,2,5.8065
+"ours","1. generating presigning message","round1: hashvrf",false,3,0.1686
+"ours","1. generating presigning message","round1: W_i",false,3,1.0309
+"ours","1. generating presigning message","round1: encode_B",false,3,24.9085
+"ours","2. generating presigning proof","round1: sigma prove",false,3,31.3814
+"ours","3. verifying each peer's presigning proof","round2: verify pi_j",true,3,71.4226
+"ours","4. NIM decoding with each peer","round2: decode mu/nu",true,3,62.2703
+"ours","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,3,5.1942
+"ours","5. finalizing online signing message","round2: masks",false,3,0.1706
+"ours","5. finalizing online signing message","round2: u_i,S_i",false,3,0.0002
+"ours","6. signature combination","combine: aggregate",false,3,0.2759
+"ours","6. signature combination","combine: bbs verify",false,3,5.9692
+"ours","1. generating presigning message","round1: hashvrf",false,4,0.1659
+"ours","1. generating presigning message","round1: W_i",false,4,1.0105
+"ours","1. generating presigning message","round1: encode_B",false,4,24.4238
+"ours","2. generating presigning proof","round1: sigma prove",false,4,31.0806
+"ours","3. verifying each peer's presigning proof","round2: verify pi_j",true,4,107.4534
+"ours","4. NIM decoding with each peer","round2: decode mu/nu",true,4,93.6555
+"ours","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,4,5.2091
+"ours","5. finalizing online signing message","round2: masks",false,4,0.2501
+"ours","5. finalizing online signing message","round2: u_i,S_i",false,4,0.0002
+"ours","6. signature combination","combine: aggregate",false,4,0.2617
+"ours","6. signature combination","combine: bbs verify",false,4,5.7663
+"ours","1. generating presigning message","round1: hashvrf",false,5,0.1896
+"ours","1. generating presigning message","round1: W_i",false,5,1.0547
+"ours","1. generating presigning message","round1: encode_B",false,5,25.5972
+"ours","2. generating presigning proof","round1: sigma prove",false,5,32.5338
+"ours","3. verifying each peer's presigning proof","round2: verify pi_j",true,5,148.9230
+"ours","4. NIM decoding with each peer","round2: decode mu/nu",true,5,131.1898
+"ours","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,5,5.7163
+"ours","5. finalizing online signing message","round2: masks",false,5,0.3401
+"ours","5. finalizing online signing message","round2: u_i,S_i",false,5,0.0003
+"ours","6. signature combination","combine: aggregate",false,5,0.2755
+"ours","6. signature combination","combine: bbs verify",false,5,5.9670
+"ours","1. generating presigning message","round1: hashvrf",false,6,0.1823
+"ours","1. generating presigning message","round1: W_i",false,6,1.0785
+"ours","1. generating presigning message","round1: encode_B",false,6,26.1551
+"ours","2. generating presigning proof","round1: sigma prove",false,6,33.4053
+"ours","3. verifying each peer's presigning proof","round2: verify pi_j",true,6,191.8548
+"ours","4. NIM decoding with each peer","round2: decode mu/nu",true,6,167.0182
+"ours","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,6,6.0515
+"ours","5. finalizing online signing message","round2: masks",false,6,0.4454
+"ours","5. finalizing online signing message","round2: u_i,S_i",false,6,0.0007
+"ours","6. signature combination","combine: aggregate",false,6,0.2713
+"ours","6. signature combination","combine: bbs verify",false,6,6.0837
+"ours","1. generating presigning message","round1: hashvrf",false,7,0.1827
+"ours","1. generating presigning message","round1: W_i",false,7,1.0627
+"ours","1. generating presigning message","round1: encode_B",false,7,26.5356
+"ours","2. generating presigning proof","round1: sigma prove",false,7,33.4772
+"ours","3. verifying each peer's presigning proof","round2: verify pi_j",true,7,231.1063
+"ours","4. NIM decoding with each peer","round2: decode mu/nu",true,7,201.4836
+"ours","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,7,6.3345
+"ours","5. finalizing online signing message","round2: masks",false,7,0.5297
+"ours","5. finalizing online signing message","round2: u_i,S_i",false,7,0.0005
+"ours","6. signature combination","combine: aggregate",false,7,0.2806
+"ours","6. signature combination","combine: bbs verify",false,7,6.0235
+"ours-sb","1. generating presigning message","round1: hashvrf",false,2,0.1902
+"ours-sb","1. generating presigning message","round1: W_i",false,2,1.1609
+"ours-sb","1. generating presigning message","round1: encode_B",false,2,14.0245
+"ours-sb","2. generating presigning proof","round1: sigma prove",false,2,18.5370
+"ours-sb","3. verifying each peer's presigning proof","round2: verify pi_j",true,2,21.3010
+"ours-sb","4. NIM decoding with each peer","round2: decode mu/nu",true,2,29.9571
+"ours-sb","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,2,5.4990
+"ours-sb","5. finalizing online signing message","round2: masks",false,2,0.0987
+"ours-sb","5. finalizing online signing message","round2: u_i,S_i",false,2,0.0006
+"ours-sb","6. signature combination","combine: aggregate",false,2,0.2734
+"ours-sb","6. signature combination","combine: bbs verify",false,2,6.0519
+"ours-sb","1. generating presigning message","round1: hashvrf",false,3,0.1800
+"ours-sb","1. generating presigning message","round1: W_i",false,3,1.0574
+"ours-sb","1. generating presigning message","round1: encode_B",false,3,13.6687
+"ours-sb","2. generating presigning proof","round1: sigma prove",false,3,17.8599
+"ours-sb","3. verifying each peer's presigning proof","round2: verify pi_j",true,3,41.8829
+"ours-sb","4. NIM decoding with each peer","round2: decode mu/nu",true,3,59.9131
+"ours-sb","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,3,5.4246
+"ours-sb","5. finalizing online signing message","round2: masks",false,3,0.1808
+"ours-sb","5. finalizing online signing message","round2: u_i,S_i",false,3,0.0004
+"ours-sb","6. signature combination","combine: aggregate",false,3,0.2743
+"ours-sb","6. signature combination","combine: bbs verify",false,3,6.0434
+"ours-sb","1. generating presigning message","round1: hashvrf",false,4,0.1867
+"ours-sb","1. generating presigning message","round1: W_i",false,4,1.0678
+"ours-sb","1. generating presigning message","round1: encode_B",false,4,13.5332
+"ours-sb","2. generating presigning proof","round1: sigma prove",false,4,18.0051
+"ours-sb","3. verifying each peer's presigning proof","round2: verify pi_j",true,4,63.6114
+"ours-sb","4. NIM decoding with each peer","round2: decode mu/nu",true,4,90.4789
+"ours-sb","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,4,5.5610
+"ours-sb","5. finalizing online signing message","round2: masks",false,4,0.2818
+"ours-sb","5. finalizing online signing message","round2: u_i,S_i",false,4,0.0004
+"ours-sb","6. signature combination","combine: aggregate",false,4,0.2825
+"ours-sb","6. signature combination","combine: bbs verify",false,4,6.0800
+"ours-sb","1. generating presigning message","round1: hashvrf",false,5,0.1774
+"ours-sb","1. generating presigning message","round1: W_i",false,5,1.0736
+"ours-sb","1. generating presigning message","round1: encode_B",false,5,13.8236
+"ours-sb","2. generating presigning proof","round1: sigma prove",false,5,18.6868
+"ours-sb","3. verifying each peer's presigning proof","round2: verify pi_j",true,5,86.0555
+"ours-sb","4. NIM decoding with each peer","round2: decode mu/nu",true,5,121.0480
+"ours-sb","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,5,5.8386
+"ours-sb","5. finalizing online signing message","round2: masks",false,5,0.3528
+"ours-sb","5. finalizing online signing message","round2: u_i,S_i",false,5,0.0005
+"ours-sb","6. signature combination","combine: aggregate",false,5,0.2711
+"ours-sb","6. signature combination","combine: bbs verify",false,5,5.9965
+"ours-sb","1. generating presigning message","round1: hashvrf",false,6,0.1807
+"ours-sb","1. generating presigning message","round1: W_i",false,6,1.0699
+"ours-sb","1. generating presigning message","round1: encode_B",false,6,13.2515
+"ours-sb","2. generating presigning proof","round1: sigma prove",false,6,17.8179
+"ours-sb","3. verifying each peer's presigning proof","round2: verify pi_j",true,6,105.2579
+"ours-sb","4. NIM decoding with each peer","round2: decode mu/nu",true,6,151.8105
+"ours-sb","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,6,5.9371
+"ours-sb","5. finalizing online signing message","round2: masks",false,6,0.4407
+"ours-sb","5. finalizing online signing message","round2: u_i,S_i",false,6,0.0005
+"ours-sb","6. signature combination","combine: aggregate",false,6,0.2850
+"ours-sb","6. signature combination","combine: bbs verify",false,6,6.3740
+"ours-sb","1. generating presigning message","round1: hashvrf",false,7,0.1968
+"ours-sb","1. generating presigning message","round1: W_i",false,7,1.0801
+"ours-sb","1. generating presigning message","round1: encode_B",false,7,13.7394
+"ours-sb","2. generating presigning proof","round1: sigma prove",false,7,18.3427
+"ours-sb","3. verifying each peer's presigning proof","round2: verify pi_j",true,7,128.2280
+"ours-sb","4. NIM decoding with each peer","round2: decode mu/nu",true,7,183.6406
+"ours-sb","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,7,6.4083
+"ours-sb","5. finalizing online signing message","round2: masks",false,7,0.5201
+"ours-sb","5. finalizing online signing message","round2: u_i,S_i",false,7,0.0005
+"ours-sb","6. signature combination","combine: aggregate",false,7,0.2749
+"ours-sb","6. signature combination","combine: bbs verify",false,7,6.0444
+"ours-sb-short","1. generating presigning message","round1: hashvrf",false,2,0.1810
+"ours-sb-short","1. generating presigning message","round1: W_i",false,2,1.0722
+"ours-sb-short","1. generating presigning message","round1: encode_B",false,2,4.2887
+"ours-sb-short","2. generating presigning proof","round1: sigma prove",false,2,8.6558
+"ours-sb-short","3. verifying each peer's presigning proof","round2: verify pi_j",true,2,12.0485
+"ours-sb-short","4. NIM decoding with each peer","round2: decode mu/nu",true,2,21.3848
+"ours-sb-short","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,2,5.6088
+"ours-sb-short","5. finalizing online signing message","round2: masks",false,2,0.0999
+"ours-sb-short","5. finalizing online signing message","round2: u_i,S_i",false,2,0.0005
+"ours-sb-short","6. signature combination","combine: aggregate",false,2,0.2735
+"ours-sb-short","6. signature combination","combine: bbs verify",false,2,6.2899
+"ours-sb-short","1. generating presigning message","round1: hashvrf",false,3,0.1757
+"ours-sb-short","1. generating presigning message","round1: W_i",false,3,1.0946
+"ours-sb-short","1. generating presigning message","round1: encode_B",false,3,4.1527
+"ours-sb-short","2. generating presigning proof","round1: sigma prove",false,3,8.8542
+"ours-sb-short","3. verifying each peer's presigning proof","round2: verify pi_j",true,3,24.0647
+"ours-sb-short","4. NIM decoding with each peer","round2: decode mu/nu",true,3,42.1537
+"ours-sb-short","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,3,5.4263
+"ours-sb-short","5. finalizing online signing message","round2: masks",false,3,0.1945
+"ours-sb-short","5. finalizing online signing message","round2: u_i,S_i",false,3,0.0003
+"ours-sb-short","6. signature combination","combine: aggregate",false,3,0.2768
+"ours-sb-short","6. signature combination","combine: bbs verify",false,3,6.1258
+"ours-sb-short","1. generating presigning message","round1: hashvrf",false,4,0.1802
+"ours-sb-short","1. generating presigning message","round1: W_i",false,4,1.0795
+"ours-sb-short","1. generating presigning message","round1: encode_B",false,4,4.1965
+"ours-sb-short","2. generating presigning proof","round1: sigma prove",false,4,8.8562
+"ours-sb-short","3. verifying each peer's presigning proof","round2: verify pi_j",true,4,35.7468
+"ours-sb-short","4. NIM decoding with each peer","round2: decode mu/nu",true,4,63.2923
+"ours-sb-short","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,4,5.6690
+"ours-sb-short","5. finalizing online signing message","round2: masks",false,4,0.2677
+"ours-sb-short","5. finalizing online signing message","round2: u_i,S_i",false,4,0.0004
+"ours-sb-short","6. signature combination","combine: aggregate",false,4,0.2752
+"ours-sb-short","6. signature combination","combine: bbs verify",false,4,6.1010
+"ours-sb-short","1. generating presigning message","round1: hashvrf",false,5,0.1816
+"ours-sb-short","1. generating presigning message","round1: W_i",false,5,1.0899
+"ours-sb-short","1. generating presigning message","round1: encode_B",false,5,4.2709
+"ours-sb-short","2. generating presigning proof","round1: sigma prove",false,5,8.9742
+"ours-sb-short","3. verifying each peer's presigning proof","round2: verify pi_j",true,5,47.5693
+"ours-sb-short","4. NIM decoding with each peer","round2: decode mu/nu",true,5,83.5086
+"ours-sb-short","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,5,5.7146
+"ours-sb-short","5. finalizing online signing message","round2: masks",false,5,0.3623
+"ours-sb-short","5. finalizing online signing message","round2: u_i,S_i",false,5,0.0004
+"ours-sb-short","6. signature combination","combine: aggregate",false,5,0.2778
+"ours-sb-short","6. signature combination","combine: bbs verify",false,5,6.2066
+"ours-sb-short","1. generating presigning message","round1: hashvrf",false,6,0.1830
+"ours-sb-short","1. generating presigning message","round1: W_i",false,6,1.0961
+"ours-sb-short","1. generating presigning message","round1: encode_B",false,6,4.2820
+"ours-sb-short","2. generating presigning proof","round1: sigma prove",false,6,8.8267
+"ours-sb-short","3. verifying each peer's presigning proof","round2: verify pi_j",true,6,60.2371
+"ours-sb-short","4. NIM decoding with each peer","round2: decode mu/nu",true,6,105.6455
+"ours-sb-short","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,6,6.0191
+"ours-sb-short","5. finalizing online signing message","round2: masks",false,6,0.4458
+"ours-sb-short","5. finalizing online signing message","round2: u_i,S_i",false,6,0.0004
+"ours-sb-short","6. signature combination","combine: aggregate",false,6,0.2738
+"ours-sb-short","6. signature combination","combine: bbs verify",false,6,6.1167
+"ours-sb-short","1. generating presigning message","round1: hashvrf",false,7,0.1844
+"ours-sb-short","1. generating presigning message","round1: W_i",false,7,1.0832
+"ours-sb-short","1. generating presigning message","round1: encode_B",false,7,4.3096
+"ours-sb-short","2. generating presigning proof","round1: sigma prove",false,7,8.9007
+"ours-sb-short","3. verifying each peer's presigning proof","round2: verify pi_j",true,7,72.5245
+"ours-sb-short","4. NIM decoding with each peer","round2: decode mu/nu",true,7,128.3625
+"ours-sb-short","5. finalizing online signing message","round2: W,(e,phi),U,tr",false,7,6.4167
+"ours-sb-short","5. finalizing online signing message","round2: masks",false,7,0.5241
+"ours-sb-short","5. finalizing online signing message","round2: u_i,S_i",false,7,0.0005
+"ours-sb-short","6. signature combination","combine: aggregate",false,7,0.2785
+"ours-sb-short","6. signature combination","combine: bbs verify",false,7,6.1508

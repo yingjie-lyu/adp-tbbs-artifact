@@ -1,0 +1,9 @@
+scheme,t,parties,mean_ms_per_signer
+"tx25-bbs (2 offline + 1 online)",2,2,408.5078
+"tx25-bbs (2 offline + 1 online)",3,3,585.7176
+"tx25-bbs (2 offline + 1 online)",4,4,771.8906
+"tx25-bbs (2 offline + 1 online)",5,5,982.2646
+"wmc24-bbs (4 rounds)",2,2,688.7557
+"wmc24-bbs (4 rounds)",3,3,893.4932
+"wmc24-bbs (4 rounds)",4,4,1100.7554
+"wmc24-bbs (4 rounds)",5,5,1301.5340

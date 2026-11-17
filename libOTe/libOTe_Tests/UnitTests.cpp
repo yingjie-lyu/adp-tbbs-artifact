@@ -1,0 +1,325 @@
+#include "UnitTests.h"
+
+#include <libOTe/config.h>
+#include <cryptoTools/Common/Log.h>
+#include <functional>
+
+
+#include "libOTe_Tests/BaseOT_Tests.h"
+#include "libOTe_Tests/OT_Tests.h"
+#include "libOTe_Tests/NcoOT_Tests.h"
+#include "libOTe_Tests/SilentOT_Tests.h"
+#include "libOTe_Tests/SoftSpoken_Tests.h"
+#include "libOTe_Tests/bitpolymul_Tests.h"
+#include "libOTe_Tests/Vole_Tests.h"
+#include "libOTe_Tests/ExConvCode_Tests.h"
+#include "libOTe_Tests/EACode_Tests.h"
+#include "libOTe/Tools/LDPC/Mtx.h"
+#include "libOTe_Tests/Pprf_Tests.h"
+#include "libOTe_Tests/TungstenCode_Tests.h"
+#include "libOTe_Tests/Dpf_Tests.h"
+#include "libOTe_Tests/Foleage_Tests.h"
+#include "libOTe_Tests/RevCuckoo_Tests.h"
+#include "libOTe_Tests/Waterfall_Tests.h"
+#include "libOTe_Tests/Cmp_Tests.h"
+#include "libOTe_Tests/Equality_Tests.h"
+#include "libOTe_Tests/Permute_Tests.h"
+#include "libOTe_Tests/Field_Tests.h"
+#include "libOTe_Tests/Poly_Tests.h"
+#include "libOTe_Tests/Ntt_Tests.h"
+#include "libOTe_Tests/BinarySolver_Tests.h"
+#include "libOTe_Tests/RingLpn_Tests.h"
+#include "libOTe_Tests/Goldilocks_Tests.h"
+#include "libOTe_Tests/Gmw_Tests.h"
+#include "libOTe_Tests/UInt_Tests.h"
+#include "libOTe_Tests/Permutation_Tests.h"
+#include "libOTe_Tests/BlkAccCode_Tests.h"
+#include "libOTe_Tests/LogVole_Tests.h"
+#include "libOTe_Tests/AnyField_Tests.h"
+
+
+using namespace osuCrypto;
+namespace tests_libOTe
+{
+	TestCollection Tests([](TestCollection& tc)
+		{
+			tc.add("AnyField_F9_Test                       ", AnyField_F9_Test);
+			tc.add("AnyField_F9Transform_Test              ", AnyField_F9Transform_Test);
+			tc.add("AnyField_F4_Test                       ", AnyField_F4_Test);
+			tc.add("AnyField_F4Transform_Test              ", AnyField_F4Transform_Test);
+			tc.add("AnyField_GoldilocksTransform_Test      ", AnyField_GoldilocksTransform_Test);
+			tc.add("AnyField_PositionCircuit_Test          ", AnyField_PositionCircuit_Test);
+			tc.add("AnyField_F3Ole_Test                     ", AnyField_F3Ole_Test);
+			tc.add("AnyField_F2Ole_Test                     ", AnyField_F2Ole_Test);
+			tc.add("AnyField_GoldilocksOle_Test             ", AnyField_GoldilocksOle_Test);
+
+			tc.add("Cmp_greaterThan_test                    ", Cmp_greaterThan_test);
+			tc.add("Tools_Transpose_Test                    ", Tools_Transpose_Test);
+			tc.add("Tools_Transpose_View_Test               ", Tools_Transpose_View_Test);
+			tc.add("Tools_Transpose_Bench                   ", Tools_Transpose_Bench);
+			tc.add("Tools_Arithmetic_Audit_Test             ", Tools_Arithmetic_Audit_Test);
+
+			tc.add("Tools_LinearCode_Test                   ", Tools_LinearCode_Test);
+			tc.add("Tools_LinearCode_sub_Test               ", Tools_LinearCode_sub_Test);
+			tc.add("Tools_LinearCode_rep_Test               ", Tools_LinearCode_rep_Test);
+			tc.add("Tools_LinearCode_Audit_Test             ", Tools_LinearCode_Audit_Test);
+
+			tc.add("Tools_bitShift_test                     ", Tools_bitShift_test);
+			tc.add("Tools_modp_test                         ", Tools_modp_test);
+			tc.add("Tools_bitpolymul_test                   ", Tools_bitpolymul_test);
+			tc.add("Tools_quasiCyclic_test                  ", Tools_quasiCyclic_test);
+
+			tc.add("Mtx_make_test                           ", tests::Mtx_make_test);
+			tc.add("Mtx_add_test                            ", tests::Mtx_add_test);
+			tc.add("Mtx_mult_test                           ", tests::Mtx_mult_test);
+			tc.add("Mtx_invert_test                         ", tests::Mtx_invert_test);
+			tc.add("Mtx_Audit_Test                          ", tests::Mtx_Audit_Test);
+
+			tc.add("EACode_encode_basic_test                ", EACode_encode_basic_test);
+			tc.add("EACode_weight_test                      ", EACode_weight_test);
+			tc.add("EACode_config_test                      ", EACode_config_test);
+
+			tc.add("ExConvCode_encode_basic_test            ", ExConvCode_encode_basic_test);
+			tc.add("ExConvCode_Audit_Test                   ", ExConvCode_Audit_Test);
+			tc.add("ExConvCode_weight_test                  ", ExConvCode_weight_test);
+
+			tc.add("TungstenCode_encode_test                ", TungstenCode_encode_test);
+			tc.add("TungstenCode_weight_test                ", TungstenCode_weight_test);
+			tc.add("TungstenCode_Audit_Test                 ", TungstenCode_Audit_Test);
+
+			tc.add("Permutation_bijection_test               ", Permutation_bijection_test);
+			tc.add("Permutation_data_test                    ", Permutation_data_test);
+			tc.add("Permutation_chunk_test                   ", Permutation_chunk_test);
+			tc.add("Permutation_Audit_Test                  ", Permutation_Audit_Test);
+
+			tc.add("RegularDpf_Multiply_Test                ", RegularDpf_Multiply_Test);
+			tc.add("RegularDpf_MultByte_Test                ", RegularDpf_MultByte_Test);
+			tc.add("RegularDpf_MultBit_Test                 ", RegularDpf_MultBit_Test);
+			tc.add("RegularDpf_MultSession_Test             ", RegularDpf_MultSession_Test);
+			tc.add("RegularDpf_MultGeneric_Test             ", RegularDpf_MultGeneric_Test);
+			
+
+			tc.add("SumDmpf_Proto_Test                      ", SumDmpf_Proto_Test);
+			tc.add("MsvcAesHashCoroutine_Regression_Test     ", MsvcAesHashCoroutine_Regression_Test);
+			tc.add("RegularDpf_Proto_Test                   ", RegularDpf_Proto_Test);
+			tc.add("RegularDpf_Puncture_Test                ", RegularDpf_Puncture_Test);
+			tc.add("RegularDpf_keyGen_Test                  ", RegularDpf_keyGen_Test);
+			tc.add("SparseDpf_Mtx_Test                      ", SparseDpf_Mtx_Test);
+			tc.add("SparseDpf_Vec_Test                      ", SparseDpf_Vec_Test);
+			tc.add("SparseDpf_Punct_Test                    ", SparseDpf_Punct_Test);
+			tc.add("SparseDpf_InactiveLevel_Test            ", SparseDpf_InactiveLevel_Test);
+			tc.add("CachedDpf_LeafRekey_Test                ", CachedDpf_LeafRekey_Test);
+			tc.add("DpfTreeHash_Rekey_Test                  ", DpfTreeHash_Rekey_Test);
+			tc.add("SparseDpf_CorrectionEncoding_Test       ", SparseDpf_CorrectionEncoding_Test);
+			tc.add("TritDpf_Proto_Test                      ", TritDpf_Proto_Test);
+			tc.add("Dpf_Audit_Test                          ", Dpf_Audit_Test);
+
+			tc.add("BinSolver_multiply_test                 ", BinSolver_multiply_test);
+			tc.add("BinSolver_multiplyMtx_test              ", BinSolver_multiplyMtx_test);
+			tc.add("BinSolver_firstOneBit_test              ", BinSolver_firstOneBit_test);
+			tc.add("BinSolver_firstOneBitMany_test          ", BinSolver_firstOneBitMany_test);
+			tc.add("BinSolver_solve_test                    ", BinSolver_solve_test);
+
+			tc.add("BinSolver_multiplyMany_test             ", BinSolver_multiplyMany_test);
+			tc.add("BinSolver_multiplyMtxMany_test          ", BinSolver_multiplyMtxMany_test);
+			tc.add("BinSolver_solveMany_test                ", BinSolver_solveMany_test);
+
+			tc.add("BitInject_basic_test                    ", BitInject_basic_test);;
+			tc.add("OtEquality_basic_Test                   ", OtEquality_basic_Test);
+			tc.add("HybEquality_basic_Test                  ", HybEquality_basic_Test);
+			tc.add("Goldreich_Proto_Test                    ", Goldreich_Proto_Test);
+			tc.add("Goldreich_stat_Test                     ", Goldreich_stat_Test);
+			tc.add("WaksmanPermute_plain_Test               ", WaksmanPermute_plain_Test);
+			tc.add("WaksmanPermute_Proto_Test               ", WaksmanPermute_Proto_Test);
+			tc.add("WaksmanPermute_Many_Test                ", WaksmanPermute_Many_Test);
+			
+			tc.add("RevCuckoo_baseOtSlicing_Test             ", RevCuckoo_baseOtSlicing_Test);
+			tc.add("RevCuckoo_seededSparseSets_Test         ", RevCuckoo_seededSparseSets_Test);
+			tc.add("RevCuckoo_iterative_Test                ", RevCuckoo_iterative_Test);
+			tc.add("RevCuckoo_singlePoint_Test              ", RevCuckoo_singlePoint_Test);
+			tc.add("RevCuckoo_robustness_Test               ", RevCuckoo_robustness_Test);
+			tc.add("RevCuckoo_failurePropagation_Test       ", RevCuckoo_failurePropagation_Test);
+			tc.add("Waterfall_config_Test                    ", Waterfall_config_Test);
+			tc.add("Waterfall_validation_Test                ", Waterfall_validation_Test);
+			tc.add("Waterfall_emptySparseColumn_Test           ", Waterfall_emptySparseColumn_Test);
+			tc.add("Waterfall_placement_Test                 ", Waterfall_placement_Test);
+			tc.add("Waterfall_hash_Test                      ", Waterfall_hash_Test);
+			tc.add("Waterfall_candidates_Test                ", Waterfall_candidates_Test);
+			tc.add("Waterfall_basicMpc_Test                  ", Waterfall_basicMpc_Test);
+			tc.add("Waterfall_reachabilityMpc_Test           ", Waterfall_reachabilityMpc_Test);
+			tc.add("Waterfall_scatterMpc_Test                ", Waterfall_scatterMpc_Test);
+			tc.add("Waterfall_dmpfEndToEnd_Test              ", Waterfall_dmpfEndToEnd_Test);
+			
+
+			tc.add("Dedup_orTree_test                       ", Dedup_orTree_test);
+			tc.add("Dedup_protocol_test                     ", Dedup_protocol_test);
+
+			tc.add("Field_F7681_Test                        ", Field_F7681_Test);
+			tc.add("Field_F12289_Test                       ", Field_F12289_Test);
+			tc.add("Field_Fp31_Test                         ", Field_Fp31_Test);
+			tc.add("Field_Audit_Test                        ", Field_Audit_Test);
+
+
+			tc.add("UInt_Basics_Test                        ", UInt_Basics_Test);
+			tc.add("UInt_Bitwise_Test                       ", UInt_Bitwise_Test);
+			tc.add("UInt_Shifts_Test                        ", UInt_Shifts_Test);
+			tc.add("UInt_AddSub_Test                        ", UInt_AddSub_Test);
+			tc.add("UInt_MulU64_Test                        ", UInt_MulU64_Test);
+			tc.add("UInt_MulFull_Test                       ", UInt_MulFull_Test);
+			tc.add("UInt_DivBasic_Test                      ", UInt_DivBasic_Test);
+			tc.add("UInt_DivMultilimb_Test                  ", UInt_DivMultilimb_Test);
+			tc.add("UInt_Stream_Test                        ", UInt_Stream_Test);
+			tc.add("UInt_Conversions_Test                   ", UInt_Conversions_Test);
+
+
+			tc.add("Goldilocks_add_Test                     ", Goldilocks_add_Test);
+			tc.add("Goldilocks_Sub_Test                     ", Goldilocks_Sub_Test);
+			tc.add("Goldilocks_Mult_Test                    ", Goldilocks_Mult_Test);
+			tc.add("Goldilocks_Inverse_Test                 ", Goldilocks_Inverse_Test);
+			tc.add("Goldilocks_Exp_Test                     ", Goldilocks_Exp_Test);
+			tc.add("Goldilocks_SIMD_Mul_Test                ", Goldilocks_SIMD_Mul_Test);
+
+
+			tc.add("Poly_basics_Tests                       ", Poly_basics_Tests);
+			tc.add("Poly_eval_root_test                     ", Poly_eval_root_test);
+			tc.add("Poly_scalar_test                        ", Poly_scalar_test);
+			tc.add("Poly_Audit_Test                         ", Poly_Audit_Test);
+
+			tc.add("Ntt_bitReverse_SIMD_Test                ", Ntt_bitReverse_SIMD_Test);
+			tc.add("Ntt_nttNegWrapMatrix_normal_Test        ", Ntt_nttNegWrapMatrix_normal_Test);
+			tc.add("Ntt_nttNegWrapMatrix_Test               ", Ntt_nttNegWrapMatrix_Test);
+			tc.add("Ntt_Audit_Test                          ", Ntt_Audit_Test);
+			//tc.add("Ntt_nttNegWrapBatch_Test                ", Ntt_nttNegWrapBatch_Test);
+			
+			tc.add("Bot_Simplest_Test                       ", Bot_Simplest_Test);
+
+			tc.add("Bot_McQuoidRR_Moeller_EKE_Test          ", Bot_McQuoidRR_Moeller_EKE_Test);
+			tc.add("Bot_McQuoidRR_Moeller_MR_Test           ", Bot_McQuoidRR_Moeller_MR_Test);
+			tc.add("Bot_McQuoidRR_Moeller_F_Test            ", Bot_McQuoidRR_Moeller_F_Test);
+			tc.add("Bot_McQuoidRR_Moeller_FM_Test           ", Bot_McQuoidRR_Moeller_FM_Test);
+
+			tc.add("Bot_McQuoidRR_Ristrestto_F_Test         ", Bot_McQuoidRR_Ristrestto_F_Test);
+			tc.add("Bot_McQuoidRR_Ristrestto_FM_Test        ", Bot_McQuoidRR_Ristrestto_FM_Test);
+
+			tc.add("Bot_MasnyRindal_Test                    ", Bot_MasnyRindal_Test);
+			tc.add("Bot_BadMasMuk_Test                      ", Bot_BadMasMuk_Test);
+			tc.add("Bot_MasnyRindal_Kyber_Test              ", Bot_MasnyRindal_Kyber_Test);
+			tc.add("Bot_Mock_Test                             ", Bot_Mock_Test);
+
+			tc.add("Vole_SoftSpokenSmall_Test               ", Vole_SoftSpokenSmall_Test);
+			tc.add("Vole_SoftSpokenSmall_Audit_Test         ", Vole_SoftSpokenSmall_Audit_Test);
+			tc.add("DotExt_Kos_Test                         ", DotExt_Kos_Test);
+			tc.add("DotExt_Iknp_Test                        ", DotExt_Iknp_Test);
+			tc.add("BlkAccCode_mtx_test                      ", BlkAccCode_mtx_test);
+			tc.add("BlkAccCode_paramSweep_test               ", BlkAccCode_paramSweep_test);
+			tc.add("BlkAccCode_Audit_Test                   ", BlkAccCode_Audit_Test);
+			
+			tc.add("RegularPprf_expandOne_test               ", RegularPprf_expandOne_test);
+			tc.add("RegularPprf_PhysicalIndex_test           ", RegularPprf_PhysicalIndex_test);
+			tc.add("RegularPprf_ByLeafIndex_test             ", RegularPprf_ByLeafIndex_test);
+			tc.add("RegularPprf_ByTreeIndex_test             ", RegularPprf_ByTreeIndex_test);
+			tc.add("RegularPprf_callback_test                ", RegularPprf_callback_test);
+			tc.add("HalfTreePprf_test                         ", HalfTreePprf_test);
+			tc.add("Pprf_Audit_Test                           ", Pprf_Audit_Test);
+			tc.add("StationaryPprf_inter_test                ", StationaryPprf_inter_test);
+
+
+
+			tc.add("OtExt_genBaseOts_Test                   ", OtExt_genBaseOts_Test);
+			tc.add("OtExt_Chosen_Test                       ", OtExt_Chosen_Test);
+			tc.add("OtExt_Iknp_Test                         ", OtExt_Iknp_Test);
+			tc.add("OtExt_Kos_Test                          ", OtExt_Kos_Test);
+			tc.add("OtExt_Kos_fs_Test                       ", OtExt_Kos_fs_Test);
+			tc.add("OtExt_Kos_ro_Test                       ", OtExt_Kos_ro_Test);
+			tc.add("OtExt_Kos_Split_Test                    ", OtExt_Kos_Split_Test);
+			tc.add("OtExt_Kos_BlockBoundary_Test            ", OtExt_Kos_BlockBoundary_Test);
+			tc.add("OtExt_InputValidation_Test              ", OtExt_InputValidation_Test);
+			tc.add("DotExt_Kos_BaseValidation_Test          ", DotExt_Kos_BaseValidation_Test);
+			tc.add("OtExt_NoHashMultiBlock_Test             ", OtExt_NoHashMultiBlock_Test);
+			tc.add("OtExt_SplitConfig_Test                  ", OtExt_SplitConfig_Test);
+			tc.add("OtExt_MoveState_Test                    ", OtExt_MoveState_Test);
+			tc.add("DotExt_Kos_Check_Test                   ", DotExt_Kos_Check_Test);
+			tc.add("DotExt_Kos_SplitDelta_Test              ", DotExt_Kos_SplitDelta_Test);
+			tc.add("DotExt_Kos_MapReuse_Test                ", DotExt_Kos_MapReuse_Test);
+			tc.add("OtExt_Silent_random_Test                ", OtExt_Silent_random_Test);
+			tc.add("OtExt_Silent_correlated_Test            ", OtExt_Silent_correlated_Test);
+			tc.add("OtExt_Silent_inplace_Test               ", OtExt_Silent_inplace_Test);
+			tc.add("OtExt_Silent_paramSweep_Test            ", OtExt_Silent_paramSweep_Test);
+			tc.add("OtExt_Silent_QuasiCyclic_Test           ", OtExt_Silent_QuasiCyclic_Test);
+			tc.add("OtExt_Silent_Tungsten_Test              ", OtExt_Silent_Tungsten_Test);
+			tc.add("OtExt_Silent_Spin_Test                  ", OtExt_Silent_Spin_Test);
+			tc.add("OtExt_Silent_stationary_Test            ", OtExt_Silent_stationary_Test);
+			tc.add("OtExt_Silent_baseOT_Test                ", OtExt_Silent_baseOT_Test);
+			tc.add("OtExt_Silent_mal_Test                   ", OtExt_Silent_mal_Test);
+			tc.add("OtExt_Silent_ExAcc_Test                 ", OtExt_Silent_ExAcc_Test);
+			tc.add("OtExt_Silent_AuditState_Test            ", OtExt_Silent_AuditState_Test);
+
+			tc.add("OtExt_SoftSpokenSemiHonest_Test         ", OtExt_SoftSpokenSemiHonest_Test);
+			tc.add("OtExt_SoftSpokenSemiHonest_Split_Test   ", OtExt_SoftSpokenSemiHonest_Split_Test);
+			tc.add("OtExt_SoftSpoken_AesState_Audit_Test    ", OtExt_SoftSpoken_AesState_Audit_Test);
+			tc.add("OtExt_SoftSpoken_BufferState_Audit_Test ", OtExt_SoftSpoken_BufferState_Audit_Test);
+			//tc.add("OtExt_SoftSpokenSemiHonest21_Test       ", OtExt_SoftSpokenSemiHonest21_Test);
+			tc.add("OtExt_SoftSpokenMalicious21_Test        ", OtExt_SoftSpokenMalicious21_Test);
+			tc.add("OtExt_SoftSpokenMalicious21_Split_Test  ", OtExt_SoftSpokenMalicious21_Split_Test);
+			tc.add("DotExt_SoftSpokenMaliciousLeaky_Test    ", DotExt_SoftSpokenMaliciousLeaky_Test);
+
+			tc.add("Vole_Noisy_test                         ", Vole_Noisy_test);
+			tc.add("Vole_Noisy_Audit_Test                   ", Vole_Noisy_Audit_Test);
+			tc.add("Vole_Silent_paramSweep_test             ", Vole_Silent_paramSweep_test);
+			tc.add("Vole_Silent_defaultMatrixRank_test      ", Vole_Silent_defaultMatrixRank_test);
+			tc.add("Vole_Silent_stationary_test             ", Vole_Silent_stationary_test);
+			tc.add("Vole_Silent_Tungsten_test               ", Vole_Silent_Tungsten_test);
+			tc.add("Vole_Silent_QuasiCyclic_test            ", Vole_Silent_QuasiCyclic_test);
+			tc.add("Vole_Silent_BlkAcc_test                 ", Vole_Silent_BlkAcc_test);
+			
+			tc.add("Vole_Silent_baseOT_test                 ", Vole_Silent_baseOT_test);
+			tc.add("Vole_Silent_mal_test                    ", Vole_Silent_mal_test);
+			tc.add("Vole_Silent_malBase_test                ", Vole_Silent_malBase_test);
+			tc.add("Vole_Silent_Clear_test                  ", Vole_Silent_Clear_test);
+			tc.add("Vole_Silent_NoiseSampling_test          ", Vole_Silent_NoiseSampling_test);
+			tc.add("Vole_Silent_Rounds_test                 ", Vole_Silent_Rounds_test);
+
+			tc.add("NcoOt_Kkrt_Test                         ", NcoOt_Kkrt_Test);
+			tc.add("NcoOt_Oos_Test                          ", NcoOt_Oos_Test);
+			tc.add("NcoOt_genBaseOts_Test                   ", NcoOt_genBaseOts_Test);
+			tc.add("NcoOt_chosen                            ", NcoOt_chosen);
+			tc.add("NcoOt_ChosenValidation_Test             ", NcoOt_ChosenValidation_Test);
+			tc.add("NcoOt_StateValidation_Test              ", NcoOt_StateValidation_Test);
+			tc.add("NcoOt_OosMove_Test                      ", NcoOt_OosMove_Test);
+
+
+			tc.add("foleage_tensor_test                     ", foleage_tensor_test);
+			tc.add("foleage_F4ole_test                      ", foleage_F4ole_test);
+			tc.add("foleage_F2ole_test                      ", foleage_F2ole_test);
+			tc.add("foleage_Triple_test                     ", foleage_Triple_test);
+
+			tc.add("foleage_GenBase_test                    ", foleage_GenBase_test);
+			tc.add("foleage_Audit_test                      ", foleage_Audit_test);
+
+			tc.add("SilentOtTriple_ole_test                 ", SilentOtTriple_ole_test);
+			tc.add("SilentOtTriple_triple_test              ", SilentOtTriple_triple_test);
+			tc.add("SilentOtTriple_Audit_test               ", SilentOtTriple_Audit_test);
+
+			tc.add("RingLpn_tensor_test                     ", RingLpn_tensor_test);
+			tc.add("RingLpn_basic_test                      ", RingLpn_basic_test);
+			tc.add("RingLpn_ole_test                        ", RingLpn_ole_test);
+			tc.add("RingLpn_conversion_test                 ", RingLpn_conversion_test);
+			tc.add("RingLpn_Triple_test                     ", RingLpn_Triple_test);
+			tc.add("RingLpn_GenBase_test                    ", RingLpn_GenBase_test);
+			tc.add("RingLpn_stationary_test                 ", RingLpn_stationary_test);
+			tc.add("RingLpn_Audit_test                      ", RingLpn_Audit_test);
+			tc.add("RingLpn_SupportFilter_test              ", RingLpn_SupportFilter_test);
+			tc.add("Gmw_Audit_Test                           ", Gmw_Audit_Test);
+
+#ifdef ENABLE_LOGVOLE
+#define LIBOTE_LOGVOLE_ADD_TEST(suite, name) \
+			tc.add("LogVole_" #suite "_" #name, LogVole_##suite##_##name);
+#define LIBOTE_LOGVOLE_ADD_EXTENDED_TEST(suite, name) \
+			tc.addExtended("LogVole_" #suite "_" #name, LogVole_##suite##_##name);
+			LIBOTE_LOGVOLE_TESTS(LIBOTE_LOGVOLE_ADD_TEST)
+			LIBOTE_LOGVOLE_EXTENDED_TESTS(LIBOTE_LOGVOLE_ADD_EXTENDED_TEST)
+#undef LIBOTE_LOGVOLE_ADD_EXTENDED_TEST
+#undef LIBOTE_LOGVOLE_ADD_TEST
+#endif
+		});
+}

@@ -1,0 +1,1957 @@
+#include "Mtx.h"
+#include "cryptoTools/Crypto/PRNG.h"
+#include "Util.h"
+#include "cryptoTools/Common/Matrix.h"
+
+namespace osuCrypto
+{
+
+    SparseMtx::SparseMtx(const SparseMtx& o)
+        : mDataRow(o.mDataRow)
+        , mDataCol(o.mDataCol)
+        , mRows(o.mRows.size())
+        , mCols(o.mCols.size())
+    {
+        u64 offset = 0;
+        for (u64 i = 0; i < mRows.size(); ++i)
+        {
+            auto size = static_cast<u64>(o.mRows[i].size());
+            if (size > mDataRow.size() - offset)
+                throw std::invalid_argument("Sparse matrix row views exceed owned storage. " LOCATION);
+
+            auto sourceData = o.mDataRow.data();
+            auto expectedSource = sourceData ? sourceData + offset : nullptr;
+            if (size && o.mRows[i].data() != expectedSource)
+                throw std::invalid_argument("Sparse matrix row view is not backed by owned storage. " LOCATION);
+
+            auto data = mDataRow.data();
+            mRows[i] = Row(span<u64>(data ? data + offset : nullptr, size));
+            offset += size;
+        }
+        if (offset != mDataRow.size())
+            throw std::invalid_argument("Sparse matrix row views do not cover owned storage. " LOCATION);
+
+        offset = 0;
+        for (u64 i = 0; i < mCols.size(); ++i)
+        {
+            auto size = static_cast<u64>(o.mCols[i].size());
+            if (size > mDataCol.size() - offset)
+                throw std::invalid_argument("Sparse matrix column views exceed owned storage. " LOCATION);
+
+            auto sourceData = o.mDataCol.data();
+            auto expectedSource = sourceData ? sourceData + offset : nullptr;
+            if (size && o.mCols[i].data() != expectedSource)
+                throw std::invalid_argument("Sparse matrix column view is not backed by owned storage. " LOCATION);
+
+            auto data = mDataCol.data();
+            mCols[i] = Col(span<u64>(data ? data + offset : nullptr, size));
+            offset += size;
+        }
+        if (offset != mDataCol.size())
+            throw std::invalid_argument("Sparse matrix column views do not cover owned storage. " LOCATION);
+    }
+
+    SparseMtx& SparseMtx::operator=(const SparseMtx& o)
+    {
+        if (this != &o)
+        {
+            SparseMtx copy(o);
+            *this = std::move(copy);
+        }
+        return *this;
+    }
+
+
+    // add the given point. SHould not have previously been added.
+    PointList::PointList(u64 r, u64 c, span<const Point> pp)
+        : mRows(r), mCols(c)
+    {
+        for (auto p : pp)
+            push_back(p);
+    }
+    void PointList::push_back(u64 x, u64 y)
+    {
+        push_back({ x,y });
+    }
+    void PointList::push_back(const Point& p)
+    {
+        if (p.mRow >= mRows)
+        {
+            std::cout << "row out of bounds " << p.mRow << " / " << mRows << std::endl;
+            throw RTE_LOC;
+        }
+
+        if (p.mCol >= mCols)
+        {
+            std::cout << "col out of bounds " << p.mCol << " / " << mCols << std::endl;
+            throw RTE_LOC;
+        }
+#ifndef NDEBUG
+        if (ss.insert({ p.mRow , p.mCol }).second == false)
+        {
+            std::cout << "duplicate (" << p.mRow << ", " << p.mCol << ") " << std::endl;
+            throw RTE_LOC;
+        }
+#endif
+        mPoints.push_back(p);
+    }
+
+    // hash the matrix. will return the same value 
+    // as hash for DenseMtx if they are equal.
+    block SparseMtx::hash() const
+    {
+        oc::RandomOracle ro(sizeof(block));
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (auto j : row(i))
+            {
+                ro.Update(j);
+            }
+
+            ro.Update(i);
+            u64 jj = -1;
+            ro.Update(jj);
+        }
+
+        block b;
+        ro.Final<block>(b);
+        return b;
+    }
+
+    void SparseMtx::init(u64 rows, u64 cols, span<Point> points)
+    {
+        std::vector<u64> rowSizes(rows);
+        std::vector<u64> colSizes(cols);
+
+        std::set<std::pair<u64, u64>> set;
+
+        for (u64 i = 0; i < u64(points.size()); ++i)
+        {
+            if (points[i].mRow >= rows)
+                throw std::invalid_argument("Sparse matrix row index is out of range. " LOCATION);
+            if (points[i].mCol >= cols)
+                throw std::invalid_argument("Sparse matrix column index is out of range. " LOCATION);
+
+            auto s = set.insert({ points[i].mRow , points[i].mCol });
+            if (!s.second)
+                throw std::invalid_argument("Sparse matrix points must be unique. " LOCATION);
+
+            ++rowSizes[points[i].mRow];
+            ++colSizes[points[i].mCol];
+
+        }
+
+        mRows.resize(rows);
+        mCols.resize(cols);
+        mDataRow.resize(points.size());
+        mDataCol.resize(points.size());
+        auto iter = mDataRow.data();
+        for (u64 i = 0; i < rows; ++i)
+        {
+            mRows[i] = Row(span<u64>(iter, iter + rowSizes[i]));
+            iter += rowSizes[i];
+            rowSizes[i] = 0;
+        }
+
+        iter = mDataCol.data();
+        for (u64 i = 0; i < cols; ++i)
+        {
+            mCols[i] = Col(span<u64>(iter, iter + colSizes[i]));
+            iter += colSizes[i];
+            colSizes[i] = 0;
+        }
+
+        for (u64 i = 0; i < u64(points.size()); ++i)
+        {
+            auto r = points[i].mRow;
+            auto c = points[i].mCol;
+            auto j = rowSizes[r]++;
+            mRows[r][j] = c;
+            auto k = colSizes[c]++;
+            mCols[c][k] = r;
+        }
+
+        for (u64 i = 0; i < rows; ++i)
+        {
+            std::sort(row(i).begin(), row(i).end());
+        }
+        for (u64 i = 0; i < cols; ++i)
+        {
+            std::sort(col(i).begin(), col(i).end());
+        }
+
+#ifndef NDEBUG
+        for (u64 i = 0; i < u64(points.size()); ++i)
+        {
+            auto row = mRows[points[i].mRow];
+            auto col = mCols[points[i].mCol];
+            assert(std::find(row.begin(), row.end(), points[i].mCol) != row.end());
+            assert(std::find(col.begin(), col.end(), points[i].mRow) != col.end());
+        }
+#endif
+    }
+
+    // return true if the coordinate is set.
+
+    bool SparseMtx::isSet(u64 row, u64 col)
+    {
+        if (row >= rows() || col >= cols())
+            throw std::invalid_argument("Sparse matrix index is out of range. " LOCATION);
+
+        auto iter = std::lower_bound(
+            mCols[col].begin(),
+            mCols[col].end(),
+            row);
+        return iter != mCols[col].end() && *iter == row;
+    }
+
+    // check that the sparse matrix is well formed.
+
+    bool SparseMtx::validate()
+    {
+        if (mDataRow.size() != mDataCol.size())
+            return false;
+
+        std::vector<span<u64>::iterator> colIters(cols());
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            if (!std::is_sorted(mCols[i].begin(), mCols[i].end()) ||
+                std::adjacent_find(mCols[i].begin(), mCols[i].end()) != mCols[i].end())
+                return false;
+            colIters[i] = mCols[i].begin();
+        }
+
+        u64 rowEntries = 0;
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            if (!std::is_sorted(mRows[i].begin(), mRows[i].end()) ||
+                std::adjacent_find(mRows[i].begin(), mRows[i].end()) != mRows[i].end())
+                return false;
+
+            if (mRows[i].size() > mDataRow.size() - rowEntries)
+                return false;
+            auto data = mDataRow.data();
+            auto expected = data ? data + rowEntries : nullptr;
+            if (mRows[i].size() && mRows[i].data() != expected)
+                return false;
+            rowEntries += mRows[i].size();
+
+            for (auto cc : mRows[i])
+            {
+                if (cc >= cols())
+                    return false;
+                if (colIters[cc] == mCols[cc].end())
+                    return false;
+
+                if (*colIters[cc] != i)
+                    return false;
+
+                ++colIters[cc];
+            }
+        }
+
+        if (rowEntries != mDataRow.size())
+            return false;
+
+        u64 colEntries = 0;
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            auto data = mDataCol.data();
+            auto expected = data ? data + colEntries : nullptr;
+            if (mCols[i].size() && mCols[i].data() != expected)
+                return false;
+            if (colIters[i] != mCols[i].end())
+                return false;
+            if (mCols[i].size() > mDataCol.size() - colEntries)
+                return false;
+            colEntries += mCols[i].size();
+        }
+
+        return colEntries == mDataCol.size();
+    }
+
+    // vertically concatinate this matrix and the parameter.
+    // this matrix will come first. The result is returned.
+
+    SparseMtx SparseMtx::vConcat(const SparseMtx& o) const
+    {
+        if (cols() != o.cols())
+            throw std::invalid_argument("Sparse matrices must have equal column counts. " LOCATION);
+        if (o.rows() > std::numeric_limits<u64>::max() - rows())
+            throw std::invalid_argument("Sparse matrix row count overflows. " LOCATION);
+
+        PointList pPnts = *this;
+        pPnts.mRows += o.rows();
+        for (auto p : o.points())
+        {
+            pPnts.push_back({ p.mRow + rows(), p.mCol });
+        }
+
+        return pPnts;
+    }
+
+    SparseMtx SparseMtx::subMatrix(u64 row, u64 col, u64 rowCount, u64 colCount)const
+    {
+        if (row > rows() || rowCount > rows() - row)
+            throw std::invalid_argument("Sparse submatrix row range is out of bounds. " LOCATION);
+        if (col > cols() || colCount > cols() - col)
+            throw std::invalid_argument("Sparse submatrix column range is out of bounds. " LOCATION);
+
+        if (rowCount == 0 || colCount == 0)
+            return {};
+
+        SparseMtx R;
+
+        auto rEnd = row + rowCount;
+        auto cEnd = col + colCount;
+
+        u64 total = 0;
+        std::vector<std::array<span<u64>::iterator, 2>> rowIters(rEnd - row);
+        std::vector<std::array<span<u64>::iterator, 2>> colIters(cEnd - col);
+
+        for (u64 i = row, ii = 0; i < rEnd; ++i, ++ii)
+        {
+            auto& rowi = mRows[i];
+            auto iter = std::lower_bound(rowi.begin(), rowi.end(), col);
+            auto end = std::lower_bound(iter, rowi.end(), cEnd);
+
+            rowIters[ii][0] = iter;
+            rowIters[ii][1] = end;
+
+#ifndef NDEBUG
+            for (auto c : span<u64>(iter, end))
+            {
+                assert(c < cols());
+                assert(c - col < colCount);
+            }
+#endif
+            total += end - iter;
+        }
+
+
+        for (u64 i = col, ii = 0; i < cEnd; ++i, ++ii)
+        {
+            auto& coli = mCols[i];
+            auto iter = std::lower_bound(coli.begin(), coli.end(), row);
+            auto end = std::lower_bound(iter, coli.end(), rEnd);
+
+            colIters[ii][0] = iter;
+            colIters[ii][1] = end;
+
+
+#ifndef NDEBUG
+            for (auto r : span<u64>(iter, end))
+            {
+                assert(r < rows());
+                assert(r - row < rowCount);
+            }
+#endif
+        }
+
+        R.mDataRow.resize(total);
+        R.mDataCol.resize(total);
+
+        R.mRows.resize(rEnd - row);
+        R.mCols.resize(cEnd - col);
+
+        auto iter = R.mDataRow.begin();
+        for (u64 i = 0; i < rowIters.size(); ++i)
+        {
+            u64 size = (u64)std::distance(rowIters[i][0], rowIters[i][1]);
+
+            //std::transform(rowIters[i][0], rowIters[i][1], iter, [&](const auto& src) {return src - col; });
+
+            for (u64 j = 0; j < size; ++j)
+            {
+                auto& cc = *(rowIters[i][0] + j);
+                auto& dd = *(iter + j);
+                dd = cc - col;
+                assert(dd < colCount);
+            }
+            if (size)
+                R.mRows[i] = Row(span<u64>(&*iter, size));
+            iter += size;
+        }
+
+        iter = R.mDataCol.begin();
+        for (u64 i = 0; i < colIters.size(); ++i)
+        {
+            auto size = (u64)std::distance(colIters[i][0], colIters[i][1]);
+            //std::transform(colIters[i][0], colIters[i][1], iter, [&](const auto& src) {return src - row; });
+
+            for (u64 j = 0; j < size; ++j)
+            {
+                auto rr = *(colIters[i][0] + j);
+                *(iter + j) = rr - row;
+                assert(*(iter + j) < rowCount);
+            }
+
+            if (size)
+                R.mCols[i] = Col(span<u64>(&*iter, size));
+
+            iter += size;
+        }
+
+        assert(R.validate());
+
+        return R;
+    }
+
+    DenseMtx SparseMtx::dense() const
+    {
+        DenseMtx mtx(rows(), cols());
+
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (auto j : row(i))
+                mtx(i, j) = 1;
+        }
+
+        return mtx;
+    }
+
+    // multiply this matrix with the given vector.
+
+    std::vector<u8> SparseMtx::mult(span<const u8> x) const
+    {
+        std::vector<u8> y(rows());
+        multAdd(x, y);
+        return y;
+    }
+
+    // multiply this matrix by x and add (xor) the result to y.
+
+    //void SparseMtx::multAdd(span<const u8> x, span<u8> y) const
+    //{
+    //    assert(cols() == x.size());
+    //    assert(y.size() == rows());
+    //    for (u64 i = 0; i < rows(); ++i)
+    //    {
+    //        for (auto c : row(i))
+    //        {
+    //            assert(c < cols());
+    //            y[i] ^= x[c];
+    //        }
+    //    }
+    //}
+
+    // multiply this sparse matrix with y.
+
+    SparseMtx SparseMtx::mult(const SparseMtx& X) const
+    {
+        if (cols() != X.rows())
+            throw std::invalid_argument("Sparse matrix multiplication dimensions do not match. " LOCATION);
+
+
+
+        //SparseMtx y;
+        std::vector<Point> points;
+        //std::vector<u64> res;
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            auto r = this->row(i);
+            for (u64 j = 0; j < X.cols(); ++j)
+            {
+                auto c = X.col(j);
+
+                u64 bit = 0;
+
+                span<const u64>::iterator mIter = r.begin();
+                span<const u64>::iterator mEnd = r.end();
+
+                span<const u64>::iterator xIter = c.begin();
+                span<const u64>::iterator xEnd = c.end();
+
+                while (mIter != mEnd && xIter != xEnd)
+                {
+                    if (*mIter < *xIter)
+                        ++mIter;
+                    else if (*xIter < *mIter)
+                        ++xIter;
+                    else
+                    {
+                        bit ^= 1;
+                        ++xIter;
+                        ++mIter;
+                    }
+                }
+
+                if (bit)
+                {
+                    points.push_back({ i,j });
+                }
+            }
+        }
+
+        return SparseMtx(rows(), X.cols(), points);
+    }
+
+    SparseMtx SparseMtx::add(const SparseMtx& p) const
+    {
+        if (rows() != p.rows() || cols() != p.cols())
+            throw std::invalid_argument("Sparse matrix addition dimensions do not match. " LOCATION);
+
+        SparseMtx r;
+        r.mDataCol.reserve(
+            p.mDataCol.size() +
+            mDataCol.size());
+
+        r.mRows.resize(rows());
+        r.mCols.resize(cols());
+
+        u64 prev = 0;
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            auto c0 = col(i);
+            auto c1 = p.col(i);
+
+            auto b0 = c0.begin();
+            auto b1 = c1.begin();
+            auto e0 = c0.end();
+            auto e1 = c1.end();
+
+            // push the non-zero loctions in order.
+            // skip when they are equal, i.e. 1+1=0
+            while (b0 != e0 && b1 != e1)
+            {
+                if (*b0 < *b1)
+                    r.mDataCol.push_back(*b0++);
+                else if (*b0 > *b1)
+                    r.mDataCol.push_back(*b1++);
+                else
+                {
+                    ++b0;
+                    ++b1;
+                }
+            }
+
+            // push any extra
+            while (b0 != e0)
+                r.mDataCol.push_back(*b0++);
+            while (b1 != e1)
+                r.mDataCol.push_back(*b1++);
+
+            r.mCols[i] = (prev != r.mDataCol.size()) ?
+                Col(span<u64>(r.mDataCol.begin() + prev, r.mDataCol.end())) :
+                Col{};
+
+            prev = r.mDataCol.size();
+        }
+
+        r.mDataRow.reserve(r.mDataCol.size());
+        prev = 0;
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            auto c0 = row(i);
+            auto c1 = p.row(i);
+
+            auto b0 = c0.begin();
+            auto b1 = c1.begin();
+            auto e0 = c0.end();
+            auto e1 = c1.end();
+
+            while (b0 != e0 && b1 != e1)
+            {
+                if (*b0 < *b1)
+                    r.mDataRow.push_back(*b0++);
+                else if (*b0 > *b1)
+                    r.mDataRow.push_back(*b1++);
+                else
+                {
+                    ++b0; ++b1;
+                }
+            }
+
+            while (b0 != e0)
+                r.mDataRow.push_back(*b0++);
+            while (b1 != e1)
+                r.mDataRow.push_back(*b1++);
+
+            r.mRows[i] = (prev != r.mDataRow.size()) ?
+                Row(span<u64>(r.mDataRow.begin() + prev, r.mDataRow.end())) :
+                Row{};
+
+            prev = r.mDataRow.size();
+        }
+
+        return r;
+    }
+
+    SparseMtx SparseMtx::invert() const
+    {
+        auto d = dense();
+        d = d.invert();
+        return d.sparse();
+    }
+
+    // convert this sparse matrix into a vector of points.
+
+    std::vector<Point> SparseMtx::points() const
+    {
+        std::vector<Point> p; p.reserve(mDataCol.size());
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (auto c : row(i))
+                p.push_back({ i,c });
+        }
+
+        return p;
+    }
+
+
+    bool SparseMtx::operator==(const SparseMtx& X) const
+    {
+        auto eq = rows() == X.rows() &&
+            cols() == X.cols() &&
+            mDataCol.size() == X.mDataCol.size() &&
+            mDataCol == X.mDataCol;
+
+        if (eq)
+        {
+            for (u64 i = 0; i < cols(); ++i)
+                if (col(i).size() != X.col(i).size())
+                    return false;
+
+            return true;
+        }
+        else
+            return false;
+    }
+
+    bool SparseMtx::operator!=(const SparseMtx& X) const
+    {
+        return !(*this == X);
+    }
+
+
+
+    std::ostream& operator<<(std::ostream& o, const SparseMtx& H)
+    {
+        for (u64 i = 0; i < H.rows(); ++i)
+        {
+            auto row = H.row(i);
+            for (u64 j = 0, jj = 0; j < H.cols(); ++j)
+            {
+                if (jj != (u64)row.size() && j == row[jj])
+                {
+                    if (&o == &std::cout)
+                        o << oc::Color::Green << "1 " << oc::Color::Default;
+                    else
+                        o << "1 ";
+                    ++jj;
+                }
+                else
+                    o << "0 ";
+            }
+            o << "\n";
+        }
+
+        return o;
+    }
+
+
+
+
+    void DenseMtx::Row::swap(const Row& r)
+    {
+        assert(mMtx.cols() == r.mMtx.cols());
+
+        for (u64 colIdx = 0; colIdx < mMtx.cols(); ++colIdx)
+        {
+            u8 bit = r.mMtx(r.mIdx, colIdx);
+            r.mMtx(r.mIdx, colIdx) = mMtx(mIdx, colIdx);
+            mMtx(mIdx, colIdx) = bit;
+        }
+    }
+
+    // returns true if the row is zero.
+    bool DenseMtx::Row::isZero() const
+    {
+        for (u64 colIdx = 0; colIdx < mMtx.cols(); ++colIdx)
+        {
+            u8 bit = mMtx(mIdx, colIdx);
+            if (bit)
+                return false;
+        }
+        return true;
+    }
+
+    bool DenseMtx::ConstRow::isZero() const
+    {
+        for (u64 colIdx = 0; colIdx < mMtx.cols(); ++colIdx)
+        {
+            if (mMtx(mIdx, colIdx))
+                return false;
+        }
+        return true;
+    }
+
+    void DenseMtx::Row::operator^=(const Row& r)
+    {
+        for (u64 colIdx = 0; colIdx < mMtx.cols(); ++colIdx)
+        {
+            mMtx(mIdx, colIdx) ^= r.mMtx(r.mIdx, colIdx);
+        }
+    }
+
+    void DenseMtx::resize(u64 rows, u64 cols)
+    {
+        if (rows > std::numeric_limits<u64>::max() - 127)
+            throw std::invalid_argument("Dense matrix row padding overflows. " LOCATION);
+
+        auto blockRows = (rows + 127) / 128;
+        if (cols && blockRows > std::numeric_limits<u64>::max() / cols)
+            throw std::invalid_argument("Dense matrix dimensions overflow. " LOCATION);
+
+        mData.resize(cols, blockRows);
+        mRows = rows;
+    }
+
+    void DenseMtx::colIndexSet(u64 c, std::vector<u64>& set) const
+    {
+        set.clear();
+        oc::BitIterator iter((u8*)col(c).data());
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            if (*iter)
+                set.push_back(i);
+            ++iter;
+        }
+    }
+
+    // returns a new matrix consisting of the given columns.
+
+    DenseMtx DenseMtx::selectColumns(span<u64> perm)
+    {
+        for (auto colIdx : perm)
+            if (colIdx >= cols())
+                throw std::invalid_argument("Dense matrix column index is out of range. " LOCATION);
+
+        DenseMtx r(rows(), perm.size());
+
+        for (u64 i = 0; i < (u64)perm.size(); ++i)
+        {
+            auto d = r.col(i);
+            auto s = col(perm[i]);
+            std::copy(s.begin(), s.end(), d.begin());
+        }
+        return r;
+    }
+
+    // clears the given matrix.
+
+    void DenseMtx::setZero()
+    {
+        memset(mData.data(), 0, mData.size() * sizeof(oc::block));
+    }
+
+    // swap the given rows.
+
+    void DenseMtx::rowSwap(u64 i, u64 j)
+    {
+        if (i >= rows() || j >= rows())
+            throw std::invalid_argument("Dense matrix row index is out of range. " LOCATION);
+        if (i != j)
+        {
+            row(i).swap(row(j));
+        }
+    }
+
+    // return the sparse representation of this matrix.
+
+    SparseMtx DenseMtx::sparse() const
+    {
+        std::vector<Point> points;
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (u64 j = 0; j < cols(); ++j)
+            {
+                if ((*this)(i, j))
+                    points.push_back({ i,j });
+            }
+        }
+
+        SparseMtx s;
+        s.init(rows(), cols(), points);
+
+        return s;
+    }
+
+    // multiply this matrix by m.
+
+    DenseMtx DenseMtx::mult(const DenseMtx& m)
+    {
+        if (cols() != m.rows())
+            throw std::invalid_argument("Dense matrix multiplication dimensions do not match. " LOCATION);
+
+        DenseMtx ret(rows(), m.cols());
+
+
+        for (u64 i = 0; i < ret.rows(); ++i)
+        {
+            for (u64 j = 0; j < ret.cols(); ++j)
+            {
+                u8 v = 0;
+                for (u64 k = 0; k < cols(); ++k)
+                {
+                    v ^= static_cast<u8>((*this)(i, k)) & static_cast<u8>(m(k, j));
+                }
+
+                ret(i, j) = v;
+            }
+        }
+
+        return ret;
+    }
+
+    // add this matrix with m and return the result.
+
+    DenseMtx DenseMtx::add(DenseMtx& m)
+    {
+        if (rows() != m.rows() || cols() != m.cols())
+            throw std::invalid_argument("Dense matrix addition dimensions do not match. " LOCATION);
+
+        auto ret = *this;
+        for (u64 i = 0; i < mData.size(); ++i)
+            ret.mData(i) = ret.mData(i) ^ m.mData(i);
+
+        return  ret;
+    }
+
+    // returns the identity matrix of the given size.
+
+    DenseMtx DenseMtx::Identity(u64 n)
+    {
+        DenseMtx I(n, n);
+
+        for (u64 i = 0; i < n; ++i)
+            I(i, i) = 1;
+
+        return I;
+    }
+
+    // Perform elementary row operations to this matrix
+    // to obtain a upper triangular matrix.
+
+    DenseMtx DenseMtx::upperTriangular() const
+    {
+        auto mtx = *this;
+        auto rows = mtx.rows();
+        auto cols = mtx.cols();
+
+        if (cols == 0)
+            return mtx;
+
+        u64 colIdx = 0ull;
+        for (u64 i = 0; i < rows; ++i)
+        {
+            while (mtx(i, colIdx) == 0)
+            {
+                for (u64 j = i + 1; j < rows; ++j)
+                {
+                    if (mtx(j, colIdx) == 1)
+                    {
+                        mtx.row(i).swap(mtx.row(j));
+                        --colIdx;
+                        break;
+                    }
+                }
+
+                ++colIdx;
+
+                if (colIdx == cols)
+                    return mtx;
+            }
+
+            for (u64 j = i + 1; j < rows; ++j)
+            {
+                if (mtx(j, colIdx))
+                {
+                    for (u64 k = 0; k < cols; ++k)
+                    {
+                        mtx(j, k) ^= mtx(i, k);
+                    }
+                }
+            }
+
+        }
+
+        return mtx;
+
+    }
+
+    // Perform gausian elimination and return the result.
+    DenseMtx DenseMtx::gausianElimination() const
+    {
+        auto mtx = *this;
+        auto rows = mtx.rows();
+        auto cols = mtx.cols();
+
+        if (cols == 0)
+            return mtx;
+
+        u64 colIdx = 0ull;
+        for (u64 i = 0; i < rows; ++i)
+        {
+            while (mtx(i, colIdx) == 0)
+            {
+                for (u64 j = i + 1; j < rows; ++j)
+                {
+                    if (mtx(j, colIdx) == 1)
+                    {
+                        mtx.row(i).swap(mtx.row(j));
+                        --colIdx;
+                        break;
+                    }
+                }
+
+                ++colIdx;
+
+                if (colIdx == cols)
+                    return mtx;
+            }
+
+            for (u64 j = 0; j < rows; ++j)
+            {
+                if (j != i && mtx(j, colIdx))
+                {
+                    for (u64 k = 0; k < cols; ++k)
+                    {
+                        mtx(j, k) ^= mtx(i, k);
+                    }
+                }
+            }
+
+        }
+
+        return mtx;
+
+    }
+
+    DenseMtx DenseMtx::invert() const
+    {
+        if (rows() != cols())
+            throw std::invalid_argument("Only square dense matrices can be inverted. " LOCATION);
+
+        auto mtx = *this;
+        auto n = this->rows();
+
+        auto Inv = Identity(n);
+
+        for (u64 i = 0; i < n; ++i)
+        {
+            if (mtx(i, i) == 0)
+            {
+                for (u64 j = i + 1; j < n; ++j)
+                {
+                    if (mtx(j, i) == 1)
+                    {
+                        mtx.row(i).swap(mtx.row(j));
+                        Inv.row(i).swap(Inv.row(j));
+                        break;
+                    }
+                }
+
+                if (mtx(i, i) == 0)
+                {
+                    //std::cout << mtx << std::endl;
+                    return {};
+                }
+            }
+
+            for (u64 j = 0; j < n; ++j)
+            {
+                if (j != i && mtx(j, i))
+                {
+                    for (u64 k = 0; k < n; ++k)
+                    {
+                        mtx(j, k) ^= mtx(i, k);
+                        Inv(j, k) ^= Inv(i, k);
+                    }
+                }
+            }
+
+        }
+
+        return Inv;
+
+    }
+
+    // return the transpose of this matrix.
+
+    DenseMtx DenseMtx::transpose() const
+    {
+        DenseMtx R(cols(), rows());
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (u64 j = 0; j < cols(); ++j)
+            {
+                R(j, i) = (*this)(i, j);
+            }
+        }
+        return R;
+    }
+
+    // return the submatrix starting at (row,col) with the given size.
+
+    DenseMtx DenseMtx::subMatrix(u64 row, u64 col, u64 rowCount, u64 colCount)
+    {
+        if (row > rows() || rowCount > rows() - row)
+            throw std::invalid_argument("Dense submatrix row range is out of bounds. " LOCATION);
+        if (col > cols() || colCount > cols() - col)
+            throw std::invalid_argument("Dense submatrix column range is out of bounds. " LOCATION);
+
+        DenseMtx ret(rowCount, colCount);
+
+        for (u64 i = 0, ii = row; i < rowCount; ++i, ++ii)
+        {
+            for (u64 j = 0, jj = col; j < colCount; ++j, ++jj)
+            {
+                ret(i, j) = (*this)(ii, jj);
+            }
+        }
+        return ret;
+    }
+
+    std::ostream& operator<<(std::ostream& o, const DenseMtx& H)
+    {
+        for (u64 i = 0; i < H.rows(); ++i)
+        {
+            for (u64 j = 0; j < H.cols(); ++j)
+            {
+                if (H(i, j))
+                {
+                    if (&o == &std::cout)
+                        o << oc::Color::Green << "1 " << oc::Color::Default;
+                    else
+                        o << "1 ";
+                }
+                else
+                    o << "0 ";
+            }
+            o << "\n";
+        }
+
+        return o;
+    }
+
+
+    VecSortSet::iterator VecSortSet::begin()
+    {
+        return mData.begin();
+    }
+
+    VecSortSet::iterator VecSortSet::end()
+    {
+        return mData.end();
+    }
+
+    VecSortSet::iterator VecSortSet::find(u64 i)
+    {
+        auto iter = lowerBound(i);
+        if (iter != end() && *iter != i)
+            iter = end();
+        return iter;
+    }
+
+    VecSortSet::iterator VecSortSet::lowerBound(u64 i)
+    {
+        return std::lower_bound(begin(), end(), i);
+    }
+
+    VecSortSet::constIerator VecSortSet::begin() const
+    {
+        return mData.begin();
+    }
+
+    VecSortSet::constIerator VecSortSet::end() const
+    {
+        return mData.end();
+    }
+
+    VecSortSet::constIerator VecSortSet::find(u64 i) const
+    {
+        auto iter = lowerBound(i);
+        if (iter != end() && *iter != i)
+            iter = end();
+        return iter;
+    }
+
+    VecSortSet::constIerator VecSortSet::lowerBound(u64 i) const
+    {
+        return std::lower_bound(begin(), end(), i);
+    }
+
+    void VecSortSet::clear()
+    {
+        mData.clear();
+    }
+
+    void VecSortSet::insert(u64 i)
+    {
+        auto iter = lowerBound(i);
+        implInsert(i, iter);
+    }
+
+    // insert i at the given hint. iter should lowerbound i.
+
+    void VecSortSet::insertHint(u64 i, iterator iter)
+    {
+        assert(lowerBound(i) == iter);
+        implInsert(i, iter);
+    }
+
+    void VecSortSet::implInsert(u64 i, iterator iter)
+    {
+        if (iter == end())
+        {
+            mData.push_back(i);
+        }
+        else if (*iter > i)
+        {
+            auto p = iter - begin();
+            mData.emplace_back();
+            iter = begin() + p;
+
+            while (iter != end())
+            {
+                std::swap(i, *iter);
+                ++iter;
+            }
+        }
+    }
+
+    void VecSortSet::erase(u64 i)
+    {
+        auto iter = lowerBound(i);
+        if (iter == end() || *iter != i)
+            throw std::invalid_argument("Cannot erase a missing sorted-set element. " LOCATION);
+        erase(iter);
+    }
+
+    void VecSortSet::erase(iterator iter)
+    {
+        if (iter == end())
+            throw std::invalid_argument("Cannot erase the sorted-set end iterator. " LOCATION);
+        auto e = end() - 1;
+        while (iter < e)
+        {
+            *iter = *(iter + 1);
+            ++iter;
+        }
+        mData.pop_back();
+    }
+
+    void VecSortSet::operator^=(const VecSortSet& o)
+    {
+        u64 i0 = 0;
+        u64 i1 = 0;
+
+        while (i0 != size() && i1 != o.size())
+        {
+            if (mData[i0] < o.mData[i1])
+            {
+                ++i0;
+            }
+            else if (mData[i0] == o.mData[i1])
+            {
+                erase(begin() + i0);
+                ++i1;
+            }
+            else
+            {
+                insertHint(o.mData[i1], begin() + i0);
+                ++i1;
+                ++i0;
+            }
+        }
+
+        insert(o.begin() + i1, o.end());
+    }
+
+    DynSparseMtx::DynSparseMtx(const SparseMtx& m)
+    {
+        resize(m.rows(), m.cols());
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            auto r = m.row(i);
+            row(i).insert(r.begin(), r.end());
+        }
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            auto c = m.col(i);
+            col(i).insert(c.begin(), c.end());
+        }
+    }
+
+
+    DynSparseMtx& DynSparseMtx::operator=(const SparseMtx& m)
+    {
+        resize(m.rows(), m.cols());
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            auto r = m.row(i);
+            row(i).clear();
+            row(i).insert(r.begin(), r.end());
+        }
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            auto c = m.col(i);
+            col(i).clear();
+            col(i).insert(c.begin(), c.end());
+        }
+        return *this;
+    }
+
+
+    DynSparseMtx& DynSparseMtx::operator=(const DenseMtx& m)
+    {
+        resize(m.rows(), m.cols());
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            row(i).clear();
+        }
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            //auto c = m.col(i);
+            col(i).clear();
+        }
+
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (u64 j = 0; j < cols(); ++j)
+            {
+                if (m(i, j))
+                {
+                    col(j).insert(i);
+                    row(i).insert(j);
+                }
+            }
+        }
+
+        return *this;
+    }
+
+    void DynSparseMtx::resize(u64 rows, u64 cols)
+    {
+        if (rows < mRows.size())
+        {
+            for (u64 i = mRows.size(); i-- > rows; )
+                clearRow(i);
+        }
+        if (cols < mCols.size())
+        {
+            for (u64 i = mCols.size(); i-- > cols; )
+                clearCol(i);
+        }
+
+        mRows.resize(rows);
+        mCols.resize(cols);
+    }
+
+    void DynSparseMtx::reserve(u64 rows, u64 cols)
+    {
+        mRows.reserve(rows);
+        mCols.reserve(cols);
+    }
+
+    // clears the given row and maintains the invariances.
+
+    void DynSparseMtx::clearRow(u64 i)
+    {
+        if (i >= rows())
+            throw std::invalid_argument("Dynamic sparse matrix row index is out of range. " LOCATION);
+        for (auto c : mRows[i])
+        {
+            mCols[c].erase(i);
+        }
+        mRows[i].clear();
+    }
+
+    // clears the given column and maintains the invariances.
+
+    void DynSparseMtx::clearCol(u64 i)
+    {
+        if (i >= cols())
+            throw std::invalid_argument("Dynamic sparse matrix column index is out of range. " LOCATION);
+        for (auto r : mCols[i])
+        {
+            mRows[r].erase(i);
+        }
+        mCols[i].clear();
+    }
+
+    void DynSparseMtx::pushBackCol(span<const u64> col)
+    {
+        for (auto rowIdx : col)
+            if (rowIdx >= rows())
+                throw std::invalid_argument("Dynamic sparse matrix row index is out of range. " LOCATION);
+
+        auto c = mCols.size();
+        mCols.emplace_back();
+        mCols.back().insert(col.begin(), col.end());
+
+        for (u64 i = 0; i < (u64)col.size(); ++i)
+        {
+            mRows[col[i]].insert(c);
+        }
+    }
+
+    // add the given row to the end of the matrix.
+
+    void DynSparseMtx::pushBackRow(span<const u64> row)
+    {
+        for (auto colIdx : row)
+            if (colIdx >= cols())
+                throw std::invalid_argument("Dynamic sparse matrix column index is out of range. " LOCATION);
+
+        auto r = mRows.size();
+        mRows.emplace_back();
+        mRows.back().insert(row.begin(), row.end());
+
+        for (u64 i = 0; i < (u64)row.size(); ++i)
+        {
+            mCols[row[i]].insert(r);
+        }
+    }
+
+    // add the row indexed by r1 to r0.
+
+    void DynSparseMtx::rowAdd(u64 r0, u64 r1)
+    {
+        if (r0 >= rows() || r1 >= rows())
+            throw std::invalid_argument("Dynamic sparse matrix row index is out of range. " LOCATION);
+        if (r0 == r1)
+        {
+            clearRow(r0);
+            return;
+        }
+
+        u64 i0 = 0;
+        u64 i1 = 0;
+        auto& rr0 = row(r0);
+        auto& rr1 = row(r1);
+
+        while (i0 != rr0.size() && i1 != rr1.size())
+        {
+            auto colIdx0 = rr0.mData[i0];
+            auto colIdx1 = rr1.mData[i1];
+            if (colIdx0 < colIdx1)
+            {
+                ++i0;
+            }
+            else if (colIdx0 == colIdx1)
+            {
+                col(colIdx0).erase(r0);
+                rr0.erase(rr0.begin() + i0);
+                ++i1;
+            }
+            else
+            {
+                col(colIdx1).insert(r0);
+                rr0.insertHint(colIdx1, rr0.begin() + i0);
+                ++i1;
+                ++i0;
+            }
+        }
+
+        rr0.insert(rr1.begin() + i1, rr1.end());
+        while (i1 != rr1.size())
+        {
+            auto colIdx = rr1.mData[i1];
+            col(colIdx).insert(r0);
+            ++i1;
+        }
+        //validate();
+    }
+
+    // swap the rows indexed by r1, r0.
+
+    void DynSparseMtx::rowSwap(u64 r0, u64 r1)
+    {
+        //validate();
+
+        if (r0 >= rows() || r1 >= rows())
+            throw std::invalid_argument("Dynamic sparse matrix row index is out of range. " LOCATION);
+
+        if (r0 == r1)
+            return;
+
+        u64 col0 = 0;
+        u64 col1 = 0;
+
+        auto& rr0 = mRows[r0];
+        auto& rr1 = mRows[r1];
+
+        while (col0 != rr0.size() && col1 != rr1.size())
+        {
+            if (rr0[col0] < rr1[col1])
+            {
+                auto& c0 = mCols[rr0[col0]];
+                c0.erase(r0);
+                c0.insert(r1);
+                ++col0;
+            }
+            else if (rr0[col0] > rr1[col1])
+            {
+                auto& c1 = mCols[rr1[col1]];
+                c1.erase(r1);
+                c1.insert(r0);
+                ++col1;
+            }
+            else
+            {
+                ++col1;
+                ++col0;
+            }
+        }
+
+
+
+
+        while (col0 != rr0.size())
+        {
+            auto& c0 = mCols[rr0[col0]];
+            c0.erase(r0);
+            c0.insert(r1);
+            ++col0;
+        }
+        while (col1 != rr1.size())
+        {
+            auto& c1 = mCols[rr1[col1]];
+            c1.erase(r1);
+            c1.insert(r0);
+            ++col1;
+        }
+
+        std::swap(mRows[r0], mRows[r1]);
+
+        //validate();
+    }
+
+    // check that the row/column invariances are maintained.
+
+    void DynSparseMtx::validate()
+    {
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (auto j : mRows[i])
+            {
+                if (j >= cols())
+                    throw std::runtime_error("Dynamic sparse matrix contains an invalid column index. " LOCATION);
+                if (mCols[j].find(i) == mCols[j].end())
+                    throw RTE_LOC;
+            }
+        }
+
+        for (u64 i = 0; i < cols(); ++i)
+        {
+            for (auto j : mCols[i])
+            {
+                if (j >= rows())
+                    throw std::runtime_error("Dynamic sparse matrix contains an invalid row index. " LOCATION);
+                if (mRows[j].find(i) == mRows[j].end())
+                    throw RTE_LOC;
+            }
+        }
+    }
+
+    // construct a new matrix which is formed by the given
+    // columns, as indexed by perm.
+
+    DynSparseMtx DynSparseMtx::selectColumns(span<u64> perm) const
+    {
+        for (auto colIdx : perm)
+            if (colIdx >= cols())
+                throw std::invalid_argument("Dynamic sparse matrix column index is out of range. " LOCATION);
+
+        DynSparseMtx r;
+        r.mRows.resize(rows());
+        for (u64 i = 0; i < (u64)perm.size(); ++i)
+        {
+            r.pushBackCol(col(perm[i]));
+        }
+        return r;
+    }
+
+    // return the "sparse" representation of this matirx.
+
+    SparseMtx DynSparseMtx::sparse() const
+    {
+        std::vector<Point> points;
+        for (u64 i = 0; i < rows(); ++i)
+        {
+            for (auto j : row(i))
+                points.push_back({ i,j });
+        }
+
+        SparseMtx s;
+        s.init(rows(), cols(), points);
+
+        return s;
+    }
+
+    std::ostream& operator<<(std::ostream& o, const DynSparseMtx& H)
+    {
+        for (u64 i = 0; i < H.rows(); ++i)
+        {
+            auto row = H.row(i);
+            for (u64 j = 0, jj = 0; j < H.cols(); ++j)
+            {
+                if (jj != row.size() && j == row[jj])
+                {
+                    if (&o == &std::cout)
+                        o << oc::Color::Green << "1 " << oc::Color::Default;
+                    else
+                        o << "1 ";
+                    ++jj;
+                }
+                else
+                    o << "0 ";
+            }
+            o << "\n";
+        }
+        return o;
+    }
+
+
+
+    void tests::Mtx_make_test()
+    {
+
+        u64 n1 = 221,
+            n2 = 31;
+
+        oc::PRNG prng(block(0, 0));
+
+        //Eigen::SparseMatrix<u8> eigen;
+        //eigen.resize(n1, n2);
+
+        oc::Matrix<u8> base(n1, n2);
+
+        DenseMtx dense(n1, n2);
+        DynSparseMtx sparse1, sparse2;
+        sparse1.reserve(n1, n2); sparse1.resize(0, n2);
+        sparse2.reserve(n1, n2); sparse2.resize(n1, 0);
+        std::vector<Point> points;
+
+        for (u64 i = 0; i < n1; ++i)
+        {
+            std::vector<u64> row;
+            for (u64 j = 0; j < n2; ++j)
+            {
+                base(i, j) = prng.getBit();
+                dense(i, j) = base(i, j);
+
+
+                if (base(i, j))
+                {
+                    row.push_back(j);
+                    points.push_back({ i,j });
+                    //eigen.insert(i, j);
+                }
+            }
+            sparse1.pushBackRow(row);
+        }
+
+        SparseMtx sparse3;
+        sparse3.init(n1, n2, points);
+
+
+        for (u64 j = 0; j < n2; ++j)
+        {
+            std::vector<u64> col;
+            for (u64 i = 0; i < n1; ++i)
+            {
+                if (base(i, j))
+                {
+                    col.push_back(i);
+                }
+            }
+            sparse2.pushBackCol(col);
+        }
+
+        for (u64 i = 0; i < n1; ++i)
+        {
+            for (u64 j = 0; j < n2; ++j)
+            {
+                if (base(i, j) != dense(i, j))
+                {
+                    std::cout << i << " " << j << " " << LOCATION << std::endl;
+                    abort();
+                }
+            }
+        }
+
+
+        if (!(sparse1.sparse() == sparse2.sparse()))
+        {
+            std::cout << LOCATION << std::endl;
+            abort();
+        }
+        if (!(sparse1.sparse() == dense.sparse()))
+        {
+            std::cout << LOCATION << std::endl;
+            abort();
+        }
+
+    }
+
+    void tests::Mtx_add_test()
+    {
+
+        u64 n1 = 20,
+            n2 = 30;
+
+        oc::PRNG prng(block(0, 0));
+
+        DenseMtx d1(n1, n2);
+        DenseMtx d2(n1, n2);
+
+        for (u64 i = 0; i < n1; ++i)
+            for (u64 j = 0; j < n2; ++j)
+            {
+                d1(i, j) = prng.getBit();
+                d2(i, j) = prng.getBit();
+            }
+
+        auto s1 = d1.sparse();
+        auto s2 = d2.sparse();
+
+
+
+        auto d3 = d1 + d2;
+        auto s3 = s1 + s2;
+
+        assert(s3 == d3.sparse());
+        assert(d3 == s3.dense());
+    }
+    void tests::Mtx_mult_test()
+    {
+        u64 n1 = 20,
+            n2 = 30,
+            n3 = 40;
+
+        oc::PRNG prng(block(0, 0));
+
+        DenseMtx d1(n1, n2);
+        DenseMtx d2(n2, n3);
+
+        for (u64 i = 0; i < n1; ++i)
+            for (u64 j = 0; j < n2; ++j)
+                d1(i, j) = prng.getBit();
+
+        for (u64 i = 0; i < n2; ++i)
+            for (u64 j = 0; j < n3; ++j)
+                d2(i, j) = prng.getBit();
+
+        auto s1 = d1.sparse();
+        auto s2 = d2.sparse();
+
+
+
+        auto d3 = d1 * d2;
+        auto s3 = s1 * s2;
+
+        assert(s3 == d3.sparse());
+        assert(d3 == s3.dense());
+    }
+
+    void tests::Mtx_invert_test()
+    {
+
+        u64 n1 = 40;
+
+        oc::PRNG prng(block(0, 0));
+
+        DenseMtx d1(n1, n1);
+
+        for (u64 i = 0; i < n1; ++i)
+        {
+            for (u64 j = 0; j < n1; ++j)
+            {
+                auto b = prng.getBit();
+                //std::cout << int(b) << " ";
+                d1(i, j) = b;
+            }
+            //std::cout << "\n";
+
+        }
+        //std::cout << "\nin \n" << d1 << std::endl;
+
+        auto inv = d1.invert();
+
+        auto I = d1 * inv;
+
+        assert(I == DenseMtx::Identity(n1));
+
+    }
+
+    void tests::Mtx_Audit_Test()
+    {
+        auto expectInvalid = [](auto&& fn)
+        {
+            bool rejected = false;
+            try
+            {
+                fn();
+            }
+            catch (const std::invalid_argument&)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+                throw RTE_LOC;
+        };
+
+        auto expectOutOfRange = [](auto&& fn)
+        {
+            bool rejected = false;
+            try
+            {
+                fn();
+            }
+            catch (const std::out_of_range&)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+                throw RTE_LOC;
+        };
+
+        auto expectOverflow = [](auto&& fn)
+        {
+            bool rejected = false;
+            try
+            {
+                fn();
+            }
+            catch (const std::overflow_error&)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+                throw RTE_LOC;
+        };
+
+        std::vector<Point> points{ { 0, 0 }, { 1, 1 } };
+        SparseMtx sparse(2, 2, points);
+
+        SparseMtx copied(sparse);
+        if (copied.row(0).data() == sparse.row(0).data() ||
+            copied.col(0).data() == sparse.col(0).data() || !copied.validate())
+            throw RTE_LOC;
+
+        SparseMtx assigned;
+        {
+            SparseMtx source(2, 2, points);
+            assigned = source;
+            if (assigned.row(0).data() == source.row(0).data() ||
+                assigned.col(0).data() == source.col(0).data())
+                throw RTE_LOC;
+        }
+        if (!assigned.validate() || !assigned(0, 0) || !assigned(1, 1))
+            throw RTE_LOC;
+
+        auto inconsistent = copied;
+        std::array<u64, 2> extraColumn{ 0, 0 };
+        inconsistent.mCols[0] = SparseMtx::Col(span<u64>(extraColumn));
+        if (inconsistent.validate())
+            throw RTE_LOC;
+        expectInvalid([&] { SparseMtx invalidCopy(inconsistent); });
+
+        std::vector<u8> shortInput(1), output(2);
+        expectInvalid([&] { sparse.multAdd(shortInput, output); });
+        expectInvalid([&] { (void)sparse.subMatrix(1, 0, 2, 1); });
+        std::array<u64, 1> invalidColumn{ 2 };
+        expectInvalid([&] { (void)sparse.getCols<u64>(invalidColumn); });
+
+        std::vector<Point> duplicate{ { 0, 0 }, { 0, 0 } };
+        expectInvalid([&]
+            {
+                SparseMtx invalid;
+                invalid.init(1, 1, duplicate);
+            });
+
+        std::vector<Point> outOfRange{ { 1, 0 } };
+        expectInvalid([&]
+            {
+                SparseMtx invalid;
+                invalid.init(1, 1, outOfRange);
+            });
+
+        SparseMtx wrongSparse(3, 1, span<Point>{});
+        expectInvalid([&] { (void)sparse.mult(wrongSparse); });
+        expectInvalid([&] { (void)sparse.add(wrongSparse); });
+
+        DynSparseMtx dynamic(sparse);
+        dynamic.resize(3, 3);
+        dynamic.validate();
+        if (!dynamic(0, 0) || !dynamic(1, 1))
+            throw RTE_LOC;
+
+        dynamic.resize(1, 1);
+        dynamic.validate();
+        if (!dynamic(0, 0))
+            throw RTE_LOC;
+
+        dynamic.clearRow(0);
+        dynamic.validate();
+        if (dynamic.row(0).size() || dynamic.col(0).size())
+            throw RTE_LOC;
+
+        std::array<u64, 1> invalidRow{ 1 };
+        expectInvalid([&] { dynamic.pushBackCol(invalidRow); });
+        if (dynamic.cols() != 1)
+            throw RTE_LOC;
+
+        VecSortSet set;
+        expectInvalid([&] { set.erase(0); });
+
+        DenseMtx dense(2, 2), wrongDense(3, 1), nonSquare(2, 3);
+        expectInvalid([&] { (void)dense.mult(wrongDense); });
+        expectInvalid([&] { (void)dense.add(wrongDense); });
+        expectInvalid([&] { (void)nonSquare.invert(); });
+        expectInvalid([&] { (void)dense.subMatrix(1, 0, 2, 1); });
+        expectInvalid([&] { (void)dense.selectColumns(invalidColumn); });
+        expectInvalid([&]
+            {
+                DenseMtx invalid;
+                invalid.resize(std::numeric_limits<u64>::max(), 1);
+            });
+
+        DenseMtx elimination(2, 2);
+        elimination(0, 1) = 1;
+        elimination(1, 0) = 1;
+        auto original = elimination;
+        auto upper = elimination.upperTriangular();
+        auto reduced = elimination.gausianElimination();
+        if (elimination != original || upper != DenseMtx::Identity(2) ||
+            reduced != DenseMtx::Identity(2))
+            throw RTE_LOC;
+
+        DenseMtx zeroWidth(2, 0);
+        if (zeroWidth.upperTriangular().rows() != 2 ||
+            zeroWidth.gausianElimination().rows() != 2)
+            throw RTE_LOC;
+
+        const DenseMtx& constElimination = elimination;
+        if (constElimination(0, 1) != 1 || constElimination.row(0).isZero())
+            throw RTE_LOC;
+
+        if (choose(5, 2) != 10)
+            throw RTE_LOC;
+        expectInvalid([&] { (void)choose(2, 3); });
+        expectOverflow([&] { (void)choose(68, 34); });
+        expectOutOfRange([&] { (void)ithCombination(10, 5, 2); });
+
+        u64 combinationIndex = 0;
+        for (NChooseK combinations(5, 2); combinations; ++combinations, ++combinationIndex)
+        {
+            if (*combinations != ithCombination(combinationIndex, 5, 2))
+                throw RTE_LOC;
+        }
+        if (combinationIndex != 10)
+            throw RTE_LOC;
+
+        NChooseK emptyCombination(5, 0);
+        if (!emptyCombination || !(*emptyCombination).empty())
+            throw RTE_LOC;
+        ++emptyCombination;
+        if (emptyCombination)
+            throw RTE_LOC;
+        expectOutOfRange([&] { (void)*emptyCombination; });
+        expectOutOfRange([&] { ++emptyCombination; });
+        expectInvalid([&] { NChooseK invalid(5, 2, 11); });
+
+        DenseMtx invalidParityCheck(2, 2);
+        expectInvalid([&] { (void)computeGen(invalidParityCheck); });
+        expectInvalid([&] { (void)computeSysGen(DenseMtx(2, 1)); });
+
+        std::vector<std::pair<u64, u64>> invalidSwaps{ { 0, 1 } };
+        expectInvalid([&] { (void)colSwap(DenseMtx(1, 1), invalidSwaps); });
+
+        DenseMtx singularParityCheck(1, 2);
+        std::vector<std::pair<u64, u64>> preservedSwaps{ { 7, 9 } };
+        auto noGenerator = computeGen(singularParityCheck, preservedSwaps);
+        if (noGenerator.rows() || preservedSwaps != std::vector<std::pair<u64, u64>>{ { 7, 9 } })
+            throw RTE_LOC;
+
+#ifndef ENABLE_ALGO994
+        bool unavailable = false;
+        try
+        {
+            (void)minDist2(singularParityCheck, 1, false);
+        }
+        catch (const std::runtime_error&)
+        {
+            unavailable = true;
+        }
+        if (!unavailable)
+            throw RTE_LOC;
+#endif
+    }
+
+    void tests::Mtx_block_test()
+    {
+#ifdef ENABLE_DLPC
+        oc::PRNG prng(block(0, 0));
+
+        u64 n = 10, w = 4;
+        auto n2 = n / 2;
+        auto M = sampleFixedColWeight(n, n, w, prng, false);
+
+
+        auto M00 = M.subMatrix(0, 0, n2, n2);
+        auto M01 = M.subMatrix(0, n2, n2, n2);
+        auto M10 = M.subMatrix(n2, 0, n2, n2);
+        auto M11 = M.subMatrix(n2, n2, n2, n2);
+
+
+        //std::cout << M << std::endl;
+        //std::cout << M00 << std::endl;
+        //std::cout << M01 << std::endl;
+        //std::cout << M10 << std::endl;
+        //std::cout << M11 << std::endl;
+
+#ifndef NDEBUG
+        u64 cc =
+            M00.mDataCol.size() +
+            M01.mDataCol.size() +
+            M10.mDataCol.size() +
+            M11.mDataCol.size(),
+            rr =
+            M00.mDataRow.size() +
+            M01.mDataRow.size() +
+            M10.mDataRow.size() +
+            M11.mDataRow.size();
+#endif
+
+
+        assert(cc == M.mDataCol.size());
+        assert(rr == M.mDataRow.size());
+
+        assert(M.validate());
+        assert(M00.validate());
+        assert(M01.validate());
+        assert(M10.validate());
+        assert(M11.validate());
+
+        for (u64 i = 0; i < n2; ++i)
+        {
+            for (u64 j = 0; j < n2; ++j)
+            {
+                assert(M.isSet(i, j) == M00.isSet(i, j));
+                assert(M.isSet(i, j + n2) == M01.isSet(i, j));
+                assert(M.isSet(i + n2, j) == M10.isSet(i, j));
+                assert(M.isSet(i + n2, j + n2) == M11.isSet(i, j));
+            }
+        }
+#endif
+
+    }
+
+
+}
+
+

@@ -1,0 +1,22 @@
+quantity,a_ms,b_ms_per_signer,r2,formula_at_t_min,formula_at_t_max
+"1. generating presigning message",29.4716,0.0090,0.006675,29.490,29.535
+"2. generating presigning proof",35.5047,0.0406,0.180224,35.586,35.789
+"3. verifying each peer's presigning proof",-42.2150,41.1517,0.999964,40.088,245.847
+"4. NIM decoding with each peer",-36.8707,36.0157,0.999924,35.161,215.239
+"5. finalizing online signing message",4.9184,0.2358,0.883476,5.390,6.569
+"6. signature combination",3.5586,-0.4215,0.870317,2.716,0.608
+"total (six stages)",-5.6324,77.0314,0.999853,148.430,533.588
+"phase: setup",0.0000,0.0000,1.000000,0.000,0.000
+"phase: keygen",0.0000,0.0000,1.000000,0.000,0.000
+"phase: round1: hashvrf",0.1785,-0.0004,0.108606,0.178,0.175
+"phase: round1: W_i",1.0757,-0.0013,0.187035,1.073,1.067
+"phase: round1: encode_B",28.2173,0.0108,0.009619,28.239,28.293
+"phase: round1: sigma prove",35.5047,0.0406,0.180224,35.586,35.789
+"phase: wire encode/decode",0.0000,0.0000,1.000000,0.000,0.000
+"phase: round2: verify pi_j",-42.2150,41.1517,0.999964,40.088,245.847
+"phase: round2: decode mu/nu",-36.8707,36.0157,0.999924,35.161,215.239
+"phase: round2: W,(e,phi),U,tr",4.9871,0.1519,0.763088,5.291,6.051
+"phase: round2: masks",-0.0690,0.0839,0.999557,0.099,0.518
+"phase: round2: u_i,S_i",0.0003,0.0000,0.062133,0.000,0.000
+"phase: combine: aggregate",0.1587,-0.0189,0.865484,0.121,0.027
+"phase: combine: bbs verify",3.3998,-0.4026,0.870539,2.595,0.581
